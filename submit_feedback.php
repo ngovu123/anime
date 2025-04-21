@@ -303,7 +303,7 @@ $departments = getAllDepartments();
       
       .anonymous-code {
           font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-          font-size: 1.5rem;
+          font-size: 2rem;
           font-weight: 600;
           letter-spacing: 2px;
           color: #007bff; /* Màu xanh dương theo yêu cầu */
@@ -372,31 +372,29 @@ $departments = getAllDepartments();
           margin-bottom: 10px;
       }
       
-      .file-upload-area {
+ .file-upload-area {
     position: relative;
-    /* Change the border to lighter blue and adjust dash pattern */
-    border: 2px dashed rgba(0, 123, 255, 0.2);
+    /* Thay đổi từ đường viền đứt đoạn sang đường nét liền màu xanh */
+    border: 2px solid #007bff47;
     border-radius: 8px;
-    /* Add this line to control the dash pattern (small dashes, small gaps) */
-    border-style: dashed;
-    border-width: 2px;
-    padding: 25px;
+    /* Bỏ thuộc tính border-style: dashed vì đã sử dụng border solid */
+    padding: 20px;
     text-align: center;
-    transition: all 0.3s ease;
+    /* Giảm opacity của màu nền cho nhẹ nhàng hơn */
     background-color: rgba(0, 123, 255, 0.02);
     cursor: pointer;
     overflow: hidden;
+    /* Giảm thời gian chuyển đổi để mượt hơn */
+    transition: all 0.2s ease;
 }
+
 .btn-submit, .btn-cancel {
     font-size: 14px; /* Match the regular text size */
     padding: 6px 17px; /* Slightly reduce padding to match the smaller text */
 }
       
       /* Không cần thay đổi nhiều khi hover vì đã có màu xanh mặc định */
-      .file-upload-area:hover, .file-upload-area.dragover {
-          border-color: #007bff;
-          background-color: rgba(0, 123, 255, 0.05);
-      }
+     
       
       .file-upload-icon {
           font-size: 5px;
@@ -407,10 +405,7 @@ $departments = getAllDepartments();
       }
       
       /* Icon đã có màu xanh mặc định nên không cần thay đổi nhiều khi hover */
-      .file-upload-area:hover .file-upload-icon {
-          transform: translateY(-5px);
-          color: #007bff;
-      }
+     
       
       .file-upload-text {
           margin-bottom: 5px;
@@ -760,7 +755,7 @@ $departments = getAllDepartments();
           <div class="card-body">
               <?php if ($is_showing_code && !empty($showing_anonymous_code)): ?>
               <div class="anonymous-code-container">
-                  <h4 class="anonymous-code-title">Mã tra cứu của bạn</h4>
+                  <h5 class="anonymous-code-title">Mã tra cứu của bạn</h5>
                   <div class="anonymous-code-box">
                       <span class="anonymous-code" id="anonymousCode"><?php echo $showing_anonymous_code; ?></span>
                       <button class="copy-btn" id="copyBtn" onclick="copyAnonymousCode()" title="Sao chép mã">
