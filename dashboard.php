@@ -148,12 +148,13 @@ if (isset($_POST['search_anonymous'])) {
      
      if ($feedback) {
          // Store the anonymous code in session for future reference
-         if (!isset($_SESSION['temp_anonymous_view'])) {
-             $_SESSION['temp_anonymous_view'] = [];
+         if (!isset($_SESSION['anonymous_codes'])) {
+             $_SESSION['anonymous_codes'] = [];
          }
          
-         if (!in_array($anonymous_code, $_SESSION['temp_anonymous_view'])) {
-             $_SESSION['temp_anonymous_view'][] = $anonymous_code;
+         // Add the anonymous code to the session
+         if (!in_array($anonymous_code, $_SESSION['anonymous_codes'])) {
+             $_SESSION['anonymous_codes'][] = $anonymous_code;
          }
          
          // Redirect to view feedback page
