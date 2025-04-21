@@ -53,10 +53,12 @@ if ($result && $result->num_rows > 0) {
         // User is the feedback submitter (non-anonymous)
         $is_owner = true;
         $is_handler = false;
-    } elseif ($feedback['is_anonymous'] == 1 && isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
-        // User is the anonymous feedback submitter (has anonymous code in session)
-        $is_owner = true;
-        $is_handler = false;
+   } elseif ($feedback['is_anonymous'] == 1 && 
+          ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
+           (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view'])))) {
+    // User is the anonymous feedback submitter (has anonymous code in session)
+    $is_owner = true;
+    $is_handler = false;
     } elseif ($department == $feedback['handling_department']) {
         // User belongs to the handling department
         $is_handler = true;
