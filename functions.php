@@ -1669,3 +1669,105 @@ function saveAndNotifyNewResponse($feedback_id, $responder_id, $response_text, $
     
     return false;
 }
+	/**
+ * Kiểm tra xem người dùng có quyền xóa feedback hay không
+ * 
+ * @param array $feedback Thông tin về feedback cần kiểm tra
+ * @param string $user_id ID của người dùng hiện tại
+ * @return bool True nếu người dùng có quyền xóa, ngược lại False
+ */
+function canUserDeleteFeedback($feedback, $user_id) {
+    // Chỉ cho phép xóa feedback ở trạng thái "chờ xử lý" (status = 1)
+    if ($feedback['status'] != 1) {
+        return false;
+    }
+    
+    // Nếu là feedback thông thường (không ẩn danh)
+    if ($feedback['is_anonymous'] == 0) {
+        return $feedback['staff_id'] == $user_id;
+    }
+    
+    // Nếu là feedback ẩn danh, kiểm tra mã ẩn danh trong session
+    if (isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Lưu thông tin người dùng đã tạo feedback ẩn danh
+ * 
+ * @param int $feedback_id ID của feedback
+ * @param string $anonymous_code Mã ẩn danh của feedback
+ * @param string $user_id ID của người dùng
+ * @return bool True nếu thành công, ngược lại False
+ */
+function saveAnonymousFeedbackUser($feedback_id, $anonymous_code, $user_id) {
+    // Lưu vào session để tạm thời sử dụng
+    if (!isset($_SESSION['created_anonymous_feedbacks'])) {
+        $_SESSION['created_anonymous_feedbacks'] = [];
+    }
+    
+    $_SESSION['created_anonymous_feedbacks'][$feedback_id] = [
+        'anonymous_code' => $anonymous_code,
+        'user_id' => $user_id
+    ];
+    
+    return true;
+}
+
+/**
+ * Kiểm tra xem người dùng hiện tại có phải là người tạo ra feedback ẩn danh không
+ * 
+ * @param int $feedback_id ID của feedback cần kiểm tra
+ * @param string $user_id ID của người dùng hiện tại
+ * @return bool True nếu người dùng là người tạo feedback ẩn danh, ngược lại False
+ */
+function isAnonymousFeedbackCreator($feedback_id, $user_id) {
+    if (!isset($_SESSION['created_anonymous_feedbacks']) || 
+        !isset($_SESSION['created_anonymous_feedbacks'][$feedback_id])) {
+        return false;
+    }
+    
+    return $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $user_id;
+}
+
+/**
+ * Kiểm tra xem người dùng có thuộc phòng ban xử lý của chính feedback ẩn danh mà họ tạo không
+ * 
+ * @param int $feedback_id ID của feedback cần kiểm tra
+ * @param string $user_id ID của người dùng hiện tại
+ * @param string $department Phòng ban của người dùng
+ * @return bool True nếu người dùng thuộc phòng ban xử lý của feedback ẩn danh họ tạo, ngược lại False
+ */
+function isAnonymousFeedbackCreatorInHandlingDepartment($feedback_id, $user_id, $department) {
+    global $db;
+    
+    if (!isAnonymousFeedbackCreator($feedback_id, $user_id)) {
+        return false;
+    }
+    
+    // Lấy thông tin về phòng ban xử lý của feedback
+    $sql = "SELECT handling_department FROM feedback_tb WHERE id = ?";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log("SQL Error in isAnonymousFeedbackCreatorInHandlingDepartment: " . $db->error);
+        return false;
+    }
+    
+    $stmt->bind_param("i", $feedback_id);
+    if (!$stmt->execute()) {
+        error_log("Execute Error in isAnonymousFeedbackCreatorInHandlingDepartment: " . $stmt->error);
+        return false;
+    }
+    
+    $result = $stmt->get_result();
+    if ($result && $result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        return $row['handling_department'] === $department;
+    }
+    
+    return false;
+
+}
