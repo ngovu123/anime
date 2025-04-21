@@ -68,11 +68,46 @@ if ($result && $result->num_rows > 0) {
         header("Location: dashboard.php");
         exit();
     }
+	$is_own_anonymous_to_own_dept = false;
 
-    // Check if feedback can be deleted (chỉ khi ở trạng thái chờ xử lý)
-    if ($is_owner && $feedback['status'] == 1) {
+// Lấy thông tin từ session
+if ($feedback['is_anonymous'] == 1 && $is_handler) {
+    // Kiểm tra xem người dùng có phải là người tạo feedback này không
+    if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
+        $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
+        $is_own_anonymous_to_own_dept = true;
+    }
+}
+
+// Khi user là người gửi ý kiến ẩn danh và cũng thuộc bộ phận xử lý,
+// thì user đó không được quyền xử lý ý kiến của chính mình
+if ($is_own_anonymous_to_own_dept) {
+    $is_handler = false;
+}
+$is_own_anonymous = false;
+if ($feedback['is_anonymous'] == 1) {
+    // Kiểm tra từ session
+    if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
+        $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
+        $is_own_anonymous = true;
+    }
+    // Kiểm tra từ anonymous_codes trong session
+    else if (isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
+        $is_own_anonymous = true;
+    }
+}
+   $can_delete = false;
+if ($feedback['status'] == 1) {
+    if ($feedback['is_anonymous'] == 1) {
+        // Nếu là feedback ẩn danh, kiểm tra xem người dùng có phải là người tạo không
+        if ($is_own_anonymous) {
+            $can_delete = true;
+        }
+    } else if ($is_owner) {
+        // Nếu là feedback thường và người dùng là chủ sở hữu
         $can_delete = true;
     }
+}
 
     // Get responses with attachments
     $sql = "SELECT r.*, u.name FROM feedback_response_tb r 
@@ -326,16 +361,22 @@ if (isset($_GET['success'])) {
 // Get sender name
 $sender_name = $feedback['is_anonymous'] ? 'Ẩn danh' : Select_Value_by_Condition("name", "user_tb", "staff_id", $feedback['staff_id']);
 
-// Determine if user can reply
 $can_reply = false;
 
+// Check if this is an anonymous feedback from the current user to the handling department
+$is_own_anonymous_to_dept = ($feedback['is_anonymous'] == 1 && 
+                           $department == $feedback['handling_department'] && 
+                           ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
+                            (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view']))));
+
 // Handler can reply when status is "waiting" (status = 1) or "responded" (status = 2)
-if ($is_handler && ($feedback['status'] == 1 || $feedback['status'] == 2)) {
+// But if it's the user's own anonymous feedback to their department, they shouldn't be able to reply as handler
+if ($is_handler && !$is_own_anonymous_to_own_dept && ($feedback['status'] == 1 || $feedback['status'] == 2)) {
     $can_reply = true;
 }
 
 // Owner can reply only when status is "responded" (status = 2)
-if ($is_owner && $feedback['status'] == 2) {
+if ($is_owner && $feedback['status'] == 2 && !$is_own_anonymous_to_own_dept) {
     $can_reply = true;
 }
 
@@ -346,7 +387,7 @@ $show_chat = !empty($responses) || $feedback['status'] >= 2;
 // Thêm biến để kiểm soát hiển thị phần nhập chat
 $show_chat_input = $can_reply;
 
-
+// Hiển thị thông báo chờ xử lý chỉ khi người dùng là chủ sở hữu và feedback đang ở trạng thái chờ xử lý
 $show_processing_message = $is_owner && $feedback['status'] == 1;
 
 // Lấy thông tin về file đính kèm của feedback
@@ -1381,7 +1422,11 @@ body {
 // Thay thế TOÀN BỘ đoạn code hiển thị chat container bằng đoạn này:
 ?>
 <div class="chat-container" id="chatContainer" style="<?php echo $show_chat ? '' : 'display: none;'; ?>">
-    <?php if ($is_owner && $feedback['status'] == 1): ?>
+    <?php if ($is_own_anonymous_to_own_dept && $feedback['status'] == 1): ?>
+    <div class="system-message">
+        <span>Ý kiến ẩn danh của bạn đang chờ xử lý. Bạn không thể tự chat với chính mình, vui lòng chờ người khác trong bộ phận xử lý phản hồi.</span>
+    </div>
+    <?php elseif ($is_owner && $feedback['status'] == 1): ?>
     <div class="system-message">
         <span>Ý kiến của bạn đang chờ xử lý. Bạn sẽ nhận được phản hồi sớm.</span>
     </div>
