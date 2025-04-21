@@ -153,16 +153,26 @@ if (isset($_POST['submit'])) {
               sendFeedbackStatusNotification($inserted_id, 1);
               
               // Sửa phần xử lý sau khi gửi ý kiến ẩn danh thành công
-              if ($is_anonymous) {
-                  // Store anonymous code in session for future reference
-                  if (!isset($_SESSION['anonymous_codes'])) {
-                      $_SESSION['anonymous_codes'] = [];
-                  }
-                  
-                  if (!in_array($anonymous_code, $_SESSION['anonymous_codes'])) {
-                      $_SESSION['anonymous_codes'][] = $anonymous_code;
-                  }
-                  
+             if ($is_anonymous) {
+    // Store anonymous code in session for future reference
+    if (!isset($_SESSION['anonymous_codes'])) {
+        $_SESSION['anonymous_codes'] = [];
+    }
+    
+    if (!in_array($anonymous_code, $_SESSION['anonymous_codes'])) {
+        $_SESSION['anonymous_codes'][] = $anonymous_code;
+    }
+    
+    // Thêm mới: Lưu thông tin về người đã gửi feedback ẩn danh
+    if (!isset($_SESSION['created_anonymous_feedbacks'])) {
+        $_SESSION['created_anonymous_feedbacks'] = [];
+    }
+    
+    $_SESSION['created_anonymous_feedbacks'][$inserted_id] = [
+        'anonymous_code' => $anonymous_code,
+        'user_id' => $mysql_user,
+        'handling_department' => $handling_department
+    ];
                   $success_message = "Gửi ý kiến thành công!";
                   
                   // Đặt flag để hiển thị mã ẩn danh
