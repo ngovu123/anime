@@ -34,11 +34,13 @@ $section = $user_info["section"];
 // Get user's name
 $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
 
-// QUAN TRỌNG: Quản lý session các mã ẩn danh - XÓA để đảm bảo không còn ý kiến ẩn danh nào
-// được hiển thị trong dashboard
+// QUAN TRỌNG: KHÔNG xóa session anonymous_codes để giữ thông tin quan trọng
+// Bỏ đoạn code này:
+/*
 if (isset($_SESSION['anonymous_codes'])) {
     unset($_SESSION['anonymous_codes']);
 }
+*/
 
 // Get user's feedback (feedback that the user has submitted) - ONLY NON-ANONYMOUS
 $feedbacks = [];
@@ -95,7 +97,6 @@ if ($is_handling_department) {
 // Initialize all_feedbacks
 $all_feedbacks = [];
 
-// If user is not part of handling department, set filter to show only their own feedback
 if (!$is_handling_department) {
     // For non-handling departments, we'll only show their own feedback
     // No need for filter tabs, as they can only see their own submissions
@@ -105,16 +106,75 @@ if (!$is_handling_department) {
     $all_feedbacks = array_merge($feedbacks, $department_feedbacks);
 }
 
-// THÊM: Lọc ý kiến ẩn danh ra khỏi danh sách hiển thị nếu người dùng không phải là phòng ban xử lý
-$filtered_feedbacks = [];
-foreach ($all_feedbacks as $feedback) {
-    // Loại bỏ các ý kiến ẩn danh được tạo bởi người dùng hiện tại
-    if ($feedback['is_anonymous'] == 1 && $feedback['is_owner'] == 1) {
-        continue; // Bỏ qua ý kiến ẩn danh tạo bởi người dùng
+// Lấy tất cả các ý kiến ẩn danh mà người dùng đã tạo - BẤT KỂ gửi đến phòng ban nào
+$anonymous_feedbacks_by_current_user = [];
+
+// Kiểm tra xem có dữ liệu trong session không
+if (isset($_SESSION['created_anonymous_feedbacks']) && !empty($_SESSION['created_anonymous_feedbacks'])) {
+    // Lấy danh sách ID các feedback ẩn danh mà người dùng đã tạo
+    $anonymous_feedback_ids = array_keys($_SESSION['created_anonymous_feedbacks']);
+    
+    if (!empty($anonymous_feedback_ids)) {
+        // Tạo chuỗi điều kiện IN với các ID feedback
+        $ids_string = implode(',', $anonymous_feedback_ids);
+        
+        // Lấy tất cả feedback ẩn danh mà người dùng đã tạo, không giới hạn bởi handling_department
+        $sql = "SELECT *, 1 as is_owner FROM feedback_tb 
+                WHERE is_anonymous = 1 
+                AND id IN ($ids_string)
+                ORDER BY created_at DESC";
+                
+        $stmt = $db->prepare($sql);
+        if ($stmt) {
+            $stmt->execute();
+            $result = $stmt->get_result();
+            if ($result && $result->num_rows > 0) {
+                while ($row = $result->fetch_assoc()) {
+                    $anonymous_feedbacks_by_current_user[] = $row;
+                }
+            }
+            $stmt->close();
+        }
     }
-    $filtered_feedbacks[] = $feedback;
 }
-$all_feedbacks = $filtered_feedbacks;
+
+// Thêm các feedback ẩn danh của người dùng hiện tại vào danh sách
+$all_feedbacks = array_merge($all_feedbacks, $anonymous_feedbacks_by_current_user);
+
+// Debug: Ghi log thông tin số lượng ý kiến ẩn danh tìm thấy
+error_log("User: $mysql_user, Found " . count($anonymous_feedbacks_by_current_user) . " anonymous feedbacks created by user");
+if (!empty($anonymous_feedback_ids)) {
+    error_log("Feedback IDs: " . implode(',', $anonymous_feedback_ids));
+}
+
+// Đánh dấu các ý kiến ẩn danh được gửi bởi người dùng hiện tại
+foreach ($all_feedbacks as $key => $feedback) {
+    $all_feedbacks[$key]['is_own_anonymous'] = false;
+    $all_feedbacks[$key]['can_not_chat'] = false;
+    
+    // Nếu là feedback ẩn danh
+    if ($feedback['is_anonymous'] == 1) {
+        // Kiểm tra trực tiếp từ ID của feedback
+        if (isset($_SESSION['created_anonymous_feedbacks'][$feedback['id']]) && 
+            $_SESSION['created_anonymous_feedbacks'][$feedback['id']]['user_id'] === $mysql_user) {
+            $all_feedbacks[$key]['is_own_anonymous'] = true;
+            
+            // Nếu người dùng thuộc phòng ban xử lý của chính feedback ẩn danh họ tạo
+            if ($feedback['handling_department'] === $department) {
+                $all_feedbacks[$key]['can_not_chat'] = true;
+            }
+        }
+        // Kiểm tra từ anonymous_code trong session
+        else if (isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
+            $all_feedbacks[$key]['is_own_anonymous'] = true;
+            
+            // Nếu người dùng thuộc phòng ban xử lý của feedback ẩn danh này
+            if ($feedback['handling_department'] === $department) {
+                $all_feedbacks[$key]['can_not_chat'] = true;
+            }
+        }
+    }
+}
 
 // Remove duplicates based on feedback ID
 $unique_feedbacks = [];
@@ -1338,15 +1398,29 @@ endif;
              </a>
              
              <?php 
-             // Chỉ hiển thị nút xóa nếu người dùng là người gửi và feedback đang ở trạng thái chờ xử lý
-             if ($feedback['is_owner'] == 1 && $feedback['status'] == 1): 
-             ?>
-             <a href="delete_feedback.php?id=<?php echo $feedback['id']; ?>" class="delete-btn-new" onclick="return confirmDelete(event);">
-                 Xóa
-             </a>
-             <?php endif; ?>
-         </div>
-         <?php endforeach; ?>
+          $can_delete = false;
+
+// Chỉ cho phép xóa feedback ở trạng thái "chờ xử lý" (status = 1)
+if ($feedback['status'] == 1) {
+    if ($feedback['is_anonymous'] == 1) {
+        // Nếu là feedback ẩn danh, kiểm tra xem người dùng có phải là người tạo không
+        if (isset($feedback['is_own_anonymous']) && $feedback['is_own_anonymous'] === true) {
+            $can_delete = true;
+        }
+    } else if ($feedback['is_owner'] == 1) {
+        // Nếu là feedback thường và người dùng là chủ sở hữu
+        $can_delete = true;
+    }
+}
+
+if ($can_delete): 
+?>
+<a href="delete_feedback.php?id=<?php echo $feedback['id']; ?>" class="delete-btn-new" onclick="return confirmDelete(event);">
+    Xóa
+</a>
+<?php endif; ?>
+</div>
+<?php endforeach; ?>
      </div>
      <?php endif; ?>
  </div>
