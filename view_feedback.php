@@ -10,7 +10,6 @@ if (!isset($_SESSION["SS_username"])) {
     exit();
 }
 
-
 $mysql_user = $_SESSION["SS_username"];
 $user_info = getUserDepartmentAndSection($mysql_user);
 $department = $user_info["department"];
@@ -36,6 +35,7 @@ $upload_dir = "uploads/responses/";
 if (!file_exists($upload_dir)) {
     mkdir($upload_dir, 0777, true);
 }
+
 // Get feedback details
 $sql = "SELECT f.*, u.department as sender_department FROM feedback_tb f 
     LEFT JOIN user_tb u ON f.staff_id = u.staff_id 
@@ -50,64 +50,53 @@ if ($result && $result->num_rows > 0) {
 
     // Check if user is authorized to view this feedback
     if ($feedback['staff_id'] == $mysql_user) {
-        // User is the feedback submitter (non-anonymous)
         $is_owner = true;
         $is_handler = false;
-   } elseif ($feedback['is_anonymous'] == 1 && 
-          ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
-           (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view'])))) {
-    // User is the anonymous feedback submitter (has anonymous code in session)
-    $is_owner = true;
-    $is_handler = false;
+    } elseif ($feedback['is_anonymous'] == 1 && 
+             ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
+              (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view'])))) {
+        $is_owner = true;
+        $is_handler = false;
     } elseif ($department == $feedback['handling_department']) {
-        // User belongs to the handling department
         $is_handler = true;
         $is_owner = false;
     } else {
-        // User is not authorized to view this feedback
         header("Location: dashboard.php");
         exit();
     }
-	$is_own_anonymous_to_own_dept = false;
 
-// Lấy thông tin từ session
-if ($feedback['is_anonymous'] == 1 && $is_handler) {
-    // Kiểm tra xem người dùng có phải là người tạo feedback này không
-    if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
-        $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
-        $is_own_anonymous_to_own_dept = true;
+    $is_own_anonymous_to_own_dept = false;
+    if ($feedback['is_anonymous'] == 1 && $is_handler) {
+        if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
+            $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
+            $is_own_anonymous_to_own_dept = true;
+        }
     }
-}
 
-// Khi user là người gửi ý kiến ẩn danh và cũng thuộc bộ phận xử lý,
-// thì user đó không được quyền xử lý ý kiến của chính mình
-if ($is_own_anonymous_to_own_dept) {
-    $is_handler = false;
-}
-$is_own_anonymous = false;
-if ($feedback['is_anonymous'] == 1) {
-    // Kiểm tra từ session
-    if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
-        $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
-        $is_own_anonymous = true;
+    if ($is_own_anonymous_to_own_dept) {
+        $is_handler = false;
     }
-    // Kiểm tra từ anonymous_codes trong session
-    else if (isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
-        $is_own_anonymous = true;
-    }
-}
-   $can_delete = false;
-if ($feedback['status'] == 1) {
+
+    $is_own_anonymous = false;
     if ($feedback['is_anonymous'] == 1) {
-        // Nếu là feedback ẩn danh, kiểm tra xem người dùng có phải là người tạo không
-        if ($is_own_anonymous) {
+        if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
+            $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
+            $is_own_anonymous = true;
+        } else if (isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) {
+            $is_own_anonymous = true;
+        }
+    }
+
+    $can_delete = false;
+    if ($feedback['status'] == 1) {
+        if ($feedback['is_anonymous'] == 1) {
+            if ($is_own_anonymous) {
+                $can_delete = true;
+            }
+        } else if ($is_owner) {
             $can_delete = true;
         }
-    } else if ($is_owner) {
-        // Nếu là feedback thường và người dùng là chủ sở hữu
-        $can_delete = true;
     }
-}
 
     // Get responses with attachments
     $sql = "SELECT r.*, u.name FROM feedback_response_tb r 
@@ -121,13 +110,9 @@ if ($feedback['status'] == 1) {
 
     if ($result && $result->num_rows > 0) {
         while ($row = $result->fetch_assoc()) {
-            // Get attachments for this response
             $response_id = $row['id'];
             $row['attachments'] = getResponseAttachments($response_id);
-            
-            // Debug log
             error_log("Response ID: " . $response_id . " has " . count($row['attachments']) . " attachments");
-            
             $responses[] = $row;
         }
     }
@@ -143,13 +128,10 @@ if ($feedback['status'] == 1) {
         $rating = $result->fetch_assoc();
     }
 
-    // Update last viewed time when a user views the feedback
     updateLastViewed($feedback_id, $mysql_user);
 
-    // Kiểm tra nếu người dùng đang xem feedback ẩn danh
     $viewing_anonymous = $feedback['is_anonymous'] == 1 && isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes']);
 
-    // Đánh dấu đã đọc trong session
     if (!isset($_SESSION['read_feedbacks'])) {
         $_SESSION['read_feedbacks'] = [];
     }
@@ -157,19 +139,14 @@ if ($feedback['status'] == 1) {
         $_SESSION['read_feedbacks'][] = $feedback_id;
     }
 
-    // Đánh dấu tất cả thông báo liên quan đến feedback này là đã đọc
     markFeedbackNotificationsAsRead($feedback_id, $mysql_user);
 
-    // Thêm đoạn code này để đảm bảo thông báo được cập nhật khi quay lại dashboard
     echo "<script>
-        // Đánh dấu feedback này đã được đọc trong localStorage
         localStorage.setItem('feedback_" . $feedback_id . "_read', 'true');
-        // Đặt flag để dashboard biết dashboard cần refresh thông báo
         sessionStorage.setItem('refreshAfterViewFeedback', 'true');
     </script>";
 
 } else {
-    // Feedback not found
     header("Location: dashboard.php");
     exit();
 }
@@ -181,7 +158,6 @@ if (isset($_POST['submit_response'])) {
     if (empty($response_text)) {
         $error_message = "Vui lòng nhập nội dung phản hồi.";
     } else {
-        // Process file uploads
         $attachment_paths = [];
         
         if (!empty($_FILES['attachments']['name'][0])) {
@@ -205,7 +181,7 @@ if (isset($_POST['submit_response'])) {
                         'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                         'text/plain', 'text/csv', 'application/rtf'
                     ];
-                    $max_size = 20 * 1024 * 1024; // 20MB
+                    $max_size = 20 * 1024 * 1024;
                     
                     if (!in_array($file['type'], $allowed_types)) {
                         $error_message = "Chỉ chấp nhận các định dạng: JPEG, PNG, GIF, BMP, WebP, PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, CSV, RTF.";
@@ -231,26 +207,138 @@ if (isset($_POST['submit_response'])) {
             }
         }
         
-       if (empty($error_message)) {
-            // Use the new function to save response and send notifications
+        if (empty($error_message)) {
             if (saveAndNotifyNewResponse($feedback_id, $mysql_user, $response_text, $attachment_paths)) {
                 $success_message = "Gửi phản hồi thành công!";
                 
-                // Cập nhật trạng thái thành "Đã phản hồi" (status = 2) nếu người gửi phản hồi là handler và trạng thái hiện tại là "Chờ xử lý" (status = 1)
                 if ($is_handler && $feedback['status'] == 1) {
                     $update_sql = "UPDATE feedback_tb SET status = 2 WHERE id = ?";
                     $update_stmt = $db->prepare($update_sql);
                     $update_stmt->bind_param("i", $feedback_id);
                     $update_stmt->execute();
-                    
-                    // Gửi thông báo về việc thay đổi trạng thái
                     sendFeedbackStatusNotification($feedback_id, 2);
                 }
+
+                // Only send email notification if the response is from the owner (sender)
+                if ($is_owner) {
+                    $handling_department = $feedback['handling_department'];
+                    $subject = "Phản hồi mới cho ý kiến #{$feedback['feedback_id']}";
+                    
+                    // Clean up response text to handle \r\n\r\n
+                    $clean_response_text = str_replace("\r\n\r\n", "\n\n", $response_text);
+                    $clean_response_text = str_replace("\r\n", "\n", $clean_response_text);
+                    
+                    $message = "Có phản hồi mới từ ";
+                    
+                    if ($feedback['is_anonymous'] == 1) {
+                        $message .= "<strong>người gửi ẩn danh</strong>";
+                    } else {
+                        $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
+                        $message .= "<strong>{$user_name} ({$mysql_user})</strong>";
+                    }
+                    
+                    $message .= " cho ý kiến:\n";
+                    $message .= "<strong>Tiêu đề:</strong> " . $feedback['title'] . "\n";
+                    $message .= "<strong>Phản hồi: </strong>" . $clean_response_text . "\n";
+                    
+                    // Add attachment notification if applicable
+                    if (!empty($attachment_paths)) {
+                         $message .= "<strong>Có file đính kèm:</strong>\n";
+                        foreach ($attachment_paths as $attachment) {
+                            $message .= "- " . $attachment['name'] . " (" . formatFileSize($attachment['size']) . ")\n";
+                        }
+                    }
+                    
+                    $emails = [];
+                    $sql_users = "SELECT email FROM user_tb WHERE department = ? AND email IS NOT NULL AND email != ''";
+                    $stmt_users = $db->prepare($sql_users);
+                    if ($stmt_users) {
+                        $stmt_users->bind_param("s", $handling_department);
+                        $stmt_users->execute();
+                        $result_users = $stmt_users->get_result();
+                        if ($result_users && $result_users->num_rows > 0) {
+                            while ($user = $result_users->fetch_assoc()) {
+                                if (!empty($user['email'])) {
+                                    $emails[] = $user['email'];
+                                }
+                            }
+                        }
+                        $stmt_users->close();
+                    }
+                    
+                    // Remove the current user's email from the recipients list
+                    $current_user_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $mysql_user);
+                    if ($current_user_email) {
+                        $emails = array_filter($emails, function($email) use ($current_user_email) {
+                            return trim($email) !== trim($current_user_email);
+                        });
+                    }
+                    
+                    $emails = array_filter(array_map('trim', $emails));
+                    
+                    if (!empty($emails)) {
+                        $mail_config = null;
+                        $sql_config = "SELECT * FROM mailer_tb WHERE id = 1 LIMIT 1";
+                        $result_config = $db->query($sql_config);
+                        
+                        if ($result_config && $result_config->num_rows > 0) {
+                            $mail_config = $result_config->fetch_assoc();
+                            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+                            
+                            try {
+                                $mail->isSMTP();
+                                $mail->Host       = $mail_config['host'];
+                                $mail->SMTPAuth   = true;
+                                $mail->Username   = $mail_config['address'];
+                                $mail->Password   = $mail_config['password'];
+                                $mail->Port       = $mail_config['port'];
+                                $mail->CharSet    = 'UTF-8';
+                                
+                                $mail->SMTPOptions = array(
+                                    'ssl' => array(
+                                        'verify_peer' => false,
+                                        'verify_peer_name' => false,
+                                        'allow_self_signed' => true
+                                    )
+                                );
+                                
+                                $mail->setFrom($mail_config['address'], 'Hệ thống phản hồi ý kiến');
+                                
+                                foreach ($emails as $email) {
+                                    $mail->addAddress($email);
+                                }
+                                
+                                $mail->isHTML(true);
+                                $mail->Subject = $subject;
+                                
+                                // Use HTML body with Calibri font
+                                $html_body = '<html><body style="font-family: Calibri, Arial, sans-serif;">';
+                                $html_body .= '<p>' . nl2br(htmlspecialchars($message)) . '</p>';
+                                $html_body .= '</body></html>';
+                                
+                                $mail->Body = $html_body;
+                                $mail->AltBody = $message;
+                                
+                                if (!empty($attachment_paths)) {
+                                    foreach ($attachment_paths as $attachment) {
+                                        if (isset($attachment['path']) && file_exists($attachment['path'])) {
+                                            $mail->addAttachment(
+                                                $attachment['path'],
+                                                isset($attachment['name']) ? $attachment['name'] : basename($attachment['path'])
+                                            );
+                                        }
+                                    }
+                                }
+                                
+                                $mail->send();
+                                error_log("Email thông báo phản hồi đã được gửi đến bộ phận xử lý");
+                            } catch (PHPMailer\PHPMailer\Exception $e) {
+                                error_log("Lỗi gửi email thông báo phản hồi: " . $mail->ErrorInfo);
+                            }
+                        }
+                    }
+                }
                 
-                // IMPORTANT: Do NOT change status to 3 (kết thúc) here when a user replies
-                // Leave status as 2 (đã phản hồi) and keep chat open
-                
-                // Refresh page to show new response
                 header("Location: view_feedback.php?id=$feedback_id&success=1");
                 exit();
             } else {
@@ -273,25 +361,18 @@ if (isset($_POST['submit_rating']) && $is_owner && $feedback['status'] == 2) {
         $stmt->bind_param("iis", $feedback_id, $rating_value, $rating_comment);
         
         if ($stmt->execute()) {
-            // Update feedback status to "Kết thúc" ONLY after rating is submitted
             $sql = "UPDATE feedback_tb SET status = 3 WHERE id = ?";
             $stmt = $db->prepare($sql);
             $stmt->bind_param("i", $feedback_id);
             if ($stmt->execute()) {
-                // Gửi thông báo trạng thái "Kết thúc"
                 sendFeedbackStatusNotification($feedback_id, 3);
             }
             
-            // Create notification for handlers
             $sql = "SELECT DISTINCT u.staff_id FROM user_tb u 
                     WHERE u.department = ? AND u.staff_id != ?";
             $stmt = $db->prepare($sql);
-            
-            // Fix: Create variables for the parameters
             $dept = $feedback['handling_department'];
-            // Use empty string as default if staff_id is null
             $staff = $feedback['staff_id'] ? $feedback['staff_id'] : '';
-            
             $stmt->bind_param("ss", $dept, $staff);
             $stmt->execute();
             $result = $stmt->get_result();
@@ -304,8 +385,6 @@ if (isset($_POST['submit_rating']) && $is_owner && $feedback['status'] == 2) {
             }
             
             $success_message = "Gửi đánh giá thành công!";
-            
-            // Chuyển hướng về dashboard.php sau khi đánh giá
             header("Location: dashboard.php?success=rating");
             exit();
         } else {
@@ -314,12 +393,9 @@ if (isset($_POST['submit_rating']) && $is_owner && $feedback['status'] == 2) {
     }
 }
 
-// Handle status change - IMPORTANT: Only allow changing between status 1 and 2
+// Handle status change
 if (isset($_POST['change_status']) && $is_handler) {
     $new_status = intval($_POST['status']);
-
-    // Chỉ cho phép thay đổi trạng thái từ "Chờ xử lý" sang "Đã phản hồi" hoặc ngược lại
-    // KHÔNG cho phép thay đổi trạng thái sang "Kết thúc" (status = 3)
     if (($new_status == 2 && $feedback['status'] == 1) || ($new_status == 1 && $feedback['status'] == 2)) {
         $sql = "UPDATE feedback_tb SET status = ? WHERE id = ?";
         $stmt = $db->prepare($sql);
@@ -327,17 +403,11 @@ if (isset($_POST['change_status']) && $is_handler) {
         
         if ($stmt->execute()) {
             $feedback['status'] = $new_status;
-            
-            // Gửi thông báo trạng thái mới
             sendFeedbackStatusNotification($feedback_id, $new_status);
-            
             $success_message = "Cập nhật trạng thái thành công!";
-            
-            // Refresh page
             header("Location: view_feedback.php?id=$feedback_id&success=3");
             exit();
-        }
-        else {
+        } else {
             $error_message = "Có lỗi xảy ra: " . $stmt->error;
         }
     } else if ($new_status == 3) {
@@ -358,50 +428,34 @@ if (isset($_GET['success'])) {
     }
 }
 
-// Get sender name
 $sender_name = $feedback['is_anonymous'] ? 'Ẩn danh' : Select_Value_by_Condition("name", "user_tb", "staff_id", $feedback['staff_id']);
 
 $can_reply = false;
-
-// Check if this is an anonymous feedback from the current user to the handling department
 $is_own_anonymous_to_dept = ($feedback['is_anonymous'] == 1 && 
                            $department == $feedback['handling_department'] && 
                            ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
                             (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view']))));
 
-// Handler can reply when status is "waiting" (status = 1) or "responded" (status = 2)
-// But if it's the user's own anonymous feedback to their department, they shouldn't be able to reply as handler
 if ($is_handler && !$is_own_anonymous_to_own_dept && ($feedback['status'] == 1 || $feedback['status'] == 2)) {
     $can_reply = true;
 }
 
-// Owner can reply only when status is "responded" (status = 2)
 if ($is_owner && $feedback['status'] == 2 && !$is_own_anonymous_to_own_dept) {
     $can_reply = true;
 }
 
-// Determine if we should show the chat container
-// Show chat container if there are responses OR if status is "responded" or "completed"
 $show_chat = !empty($responses) || $feedback['status'] >= 2;
-
-// Thêm biến để kiểm soát hiển thị phần nhập chat
 $show_chat_input = $can_reply;
-
-// Hiển thị thông báo chờ xử lý chỉ khi người dùng là chủ sở hữu và feedback đang ở trạng thái chờ xử lý
 $show_processing_message = $is_owner && $feedback['status'] == 1;
 
-// Lấy thông tin về file đính kèm của feedback
 $feedback_attachments = [];
 if (!empty($feedback['image_path'])) {
-    // Check if it's a comma-separated list of paths
     $paths = explode(',', $feedback['image_path']);
-    
     foreach ($paths as $path) {
         if (!empty(trim($path))) {
             $file_ext = pathinfo($path, PATHINFO_EXTENSION);
             $is_image = in_array(strtolower($file_ext), ['jpg', 'jpeg', 'png', 'gif']);
             $is_pdf = strtolower($file_ext) === 'pdf';
-            
             $feedback_attachments[] = [
                 'path' => trim($path),
                 'name' => basename(trim($path)),
@@ -412,7 +466,6 @@ if (!empty($feedback['image_path'])) {
     }
 }
 
-// Helper function for time elapsed string
 function time_elapsed_string($datetime, $full = false) {
     $now = new DateTime;
     $ago = new DateTime($datetime);
@@ -442,12 +495,13 @@ function time_elapsed_string($datetime, $full = false) {
     if (!$full) $string = array_slice($string, 0, 1);
     return $string ? implode(', ', $string) . ' trước' : 'vừa xong';
 }
+
 ?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Chi tiết ý kiến - Hệ thống phản hồi ý kiến</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
@@ -503,22 +557,18 @@ body {
     flex: 1;
     overflow-y: auto; 
     -webkit-overflow-scrolling: touch;
-    padding-bottom: 0; /* Remove any bottom padding */
+    padding-bottom: 0;
 }
-/* Create a single scrollable container that wraps all three elements */
-
 .feedback-info {
     padding: 15px;
     background-color: #fff;
     border-bottom: 1px solid #eee;
-    max-height: none; /* Bỏ giới hạn chiều cao */
-    overflow-y: visible; /* Loại bỏ thanh trượt riêng */
+    max-height: none;
+    overflow-y: visible;
 }
-
-/* Ensure chat container doesn't have its own scrollbar */
 .chat-container {
     flex: 1;
-    padding: 15px 15px 0 15px; /* Reduce bottom padding */
+    padding: 15px 15px 0 15px;
     background-color: #f5f7f9;
     overflow-y: visible;
     display: flex;
@@ -532,7 +582,7 @@ body {
     bottom: 0;
     z-index: 5;
     width: 100%;
-    margin-top: auto; /* Push it to the bottom */
+    margin-top: auto;
 }
 .feedback-title {
     font-weight: 600;
@@ -582,18 +632,22 @@ body {
 .feedback-meta {
     display: flex;
     flex-direction: column;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     font-size: 12px;
 }
 .meta-item {
-    
+    margin-bottom: 3px;
+    display: flex;
+    align-items: baseline;
 }
 .meta-label {
-    
-    margin-right: 5px;
+    min-width: 80px;
+    font-weight: 500;
+    color: #495057;
+    font-size: 12px;
 }
 .feedback-content {
-    margin-top: 15px;
+    margin-top: 10px;
     line-height: 1.5;
 }
 .chat-form {
@@ -605,7 +659,7 @@ body {
     background-color: #f1f3f5;
     border-radius: 24px;
     padding: 8px 15px;
-    margin-bottom: 10px;
+    margin-bottom: 0;
 }
 .chat-input {
     flex: 1;
@@ -727,6 +781,9 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.message-user .attachment-preview {
+    background-color: rgba(255,255,255,0.2);
+}
 .message-user .attachment-preview a {
     color: white;
 }
@@ -759,6 +816,10 @@ body {
 }
 .file-preview-list {
     margin-top: 10px;
+    display: none;
+}
+.file-preview-list.show {
+    display: block;
 }
 .file-preview-item {
     display: flex;
@@ -789,13 +850,11 @@ body {
 .chat-container {
     display: flex;
     flex-direction: column;
-    min-height: 200px; /* Ensure minimum height */
+    min-height: 200px;
 }
-
 .chat-messages {
     flex: 1;
 }
-
 .rating-btn {
     background-color: #007bff;
     color: white;
@@ -909,8 +968,6 @@ body {
     from {opacity: 0; transform: translateY(-20px);}
     to {opacity: 1; transform: translateY(0);}
 }
-
-/* Toast container */
 .toast-container {
     position: fixed;
     top: 20px;
@@ -920,11 +977,9 @@ body {
     overflow-y: auto;
     pointer-events: none;
 }
-
 .toast-container .toast {
     pointer-events: auto;
 }
-
 .toast {
     background-color: rgba(0, 0, 0, 0.8);
     color: white;
@@ -938,24 +993,19 @@ body {
     animation: slideInRight 0.3s, fadeOut 0.5s 6.5s forwards;
     opacity: 0;
 }
-
 .toast.success {
     background-color: rgba(40, 167, 69, 0.9);
 }
-
 .toast.error {
     background-color: rgba(220, 53, 69, 0.9);
 }
-
 .toast-icon {
     margin-right: 10px;
     font-size: 18px;
 }
-
 .toast-message {
     flex: 1;
 }
-
 @keyframes slideInRight {
     from {
         transform: translateX(100%);
@@ -966,7 +1016,6 @@ body {
         opacity: 1;
     }
 }
-
 @keyframes fadeOut {
     from {
         opacity: 1;
@@ -976,27 +1025,22 @@ body {
         transform: translateY(-20px);
     }
 }
-
 .feedback-date {
     font-size: 0.75rem;
     margin-top: 2px;
 }
-
 .response-label {
     padding: 10px 15px 0 15px;
     background-color: #f5f79;
     border-bottom: 1px solid #eee;
-    overflow: visible; /* Đảm bảo không có thanh trượt riêng */
+    overflow: visible;
 }
-
 .response-label h6 {
     margin-bottom: 10px;
     font-weight: 600;
     color: #495057;
-    font-size: 14px; /* Đã điều chỉnh kích thước giống với "Nội dung" */
+    font-size: 14px;
 }
-
-/* Đảm bảo star rating hiển thị đúng */
 .star-container {
     font-size: 30px;
 }
@@ -1007,66 +1051,85 @@ body {
 .star-item.fas {
     color: #ffc107;
 }
-
-/* Điều chỉnh cho thiết bị di động */
 @media (max-width: 767px) {
     .container {
         padding: 0;
         height: 100vh;
-        overflow: hidden; /* Prevent scrolling on the main container */
+        overflow: hidden;
+        margin: 0;
     }
-    
     .feedback-card {
         border-radius: 0;
         height: 100vh;
         display: flex;
         flex-direction: column;
+        margin: 0;
     }
-    
-    .combined-scroll-container {
-        height: calc(100vh - 56px - 56px); /* Adjust based on header and input heights */
-    }
-     .main-content {
+    .main-content {
         flex: 1;
         display: flex;
         flex-direction: column;
+        padding-bottom: 0;
+        overflow: hidden;
     }
-	
+    .combined-scroll-container {
+        flex: 1;
+        overflow-y: auto;
+        margin-bottom: 0;
+    }
     .chat-container {
-        padding: 10px 10px 0 10px; /* Reduce bottom padding */
+        padding: 10px 10px 0 10px;
+        margin-bottom: 0;
+        flex: 1;
     }
-    
     .chat-input-container {
-        padding: 8px;
+        padding: 6px;
+        margin: 0;
+        position: sticky;
+        bottom: 0;
+        width: 100%;
+        box-sizing: border-box;
+        background-color: #fff;
+        border-top: 1px solid #eee;
+    }
+    .chat-input-wrapper {
+        margin-bottom: 0 !important;
+        padding: 6px 12px;
+        position: relative;
+        border-radius: 20px;
     }
     .feedback-info {
         padding-bottom: 5px;
     }
-    
-    /* Ensure no extra space at bottom */
     .rating-container {
         margin-bottom: 10px;
     }
-    
     .message-bubble {
         max-width: 60%;
     }
-    
     .modal-content {
         width: 95%;
         margin: 5% auto;
     }
-}
-
-@media (min-width: 768px) {
-    .combined-scroll-container {
-        height: calc(100vh - 80px - 65px); /* Adjust based on header and input heights for desktop */
+    .file-preview-list {
+        margin: 0;
+        padding: 0;
+    }
+    .file-preview-list.show {
+        margin-top: 5px;
+    }
+    body {
+        overflow: hidden;
     }
 }
-
-
+@media (min-width: 768px) {
+    .combined-scroll-container {
+        height: calc(100vh - 80px - 65px);
+    }
+}
 .attachments-container {
     margin-top: 10px;
+    width: 100%;
 }
 .attachment-preview {
     margin-top: 8px;
@@ -1076,6 +1139,7 @@ body {
     display: flex;
     align-items: center;
     margin-bottom: 5px;
+    width: 100%;
 }
 .attachment-preview i {
     margin-right: 8px;
@@ -1100,86 +1164,54 @@ body {
     cursor: pointer;
     margin-bottom: 5px;
 }
-
-/* Add this CSS rule to ensure proper padding on mobile */
 @media (max-width: 767px) {
     .feedback-header {
-        padding: 12px;
+        padding: 15px;
         position: relative;
     }
-    
     .close-btn {
-        top: 12px;
-        right: 12px;
+        top: 15px;
+        right: 15px;
     }
-    
     .feedback-title {
-        padding-right: 20px;
-        font-size: 1rem;
+        padding-right: 25px;
+        font-size: 1.1rem;
     }
-}
-
-/* Replace it with this */
-@media (max-width: 767px) {
-    .feedback-header {
-        padding: 10px;
-        position: relative;
-    }
-    
-    .close-btn {
-        top: 10px;
-        right: 10px;
-    }
-    
-    .feedback-title {
-        padding-right: 20px;
-        font-size: 0.95rem;
-    }
-    
     .feedback-info {
-        padding: 10px;
+        padding: 15px;
     }
-    
     .chat-container {
-        padding: 10px;
+        padding: 15px;
     }
-    
     .chat-input-container {
-        padding: 10px;
+        padding: 15px;
     }
 }
-
 @media (max-width: 767px) {
     .status-nav .nav-link i {
         font-size: 12px;
     }
-    
     .feedback-status i {
         font-size: 12px;
     }
-    
     .badge i {
         font-size: 10px;
     }
 }
-
 .meta-item {
-    margin-bottom: 5px; /* Giảm từ 8px xuống 5px */
+    margin-bottom: 3px;
     display: flex;
     align-items: baseline;
 }
-
 .meta-label {
-    min-width: 90px; /* Giảm từ 100px xuống 90px */
+    min-width: 80px;
     font-weight: 500;
     color: #495057;
-    font-size: 12px; /* Giảm kích thước chữ */
+    font-size: 12px;
 }
-
 .feedback-meta {
-    margin-bottom: 15px; /* Giảm từ 20px xuống 15px */
+    margin-bottom: 10px;
 }
-
 .feedback-status {
     font-weight: 500;
     padding: 4px 10px;
@@ -1188,102 +1220,32 @@ body {
     display: inline-flex;
     align-items: center;
 }
-
 .feedback-content {
-    margin-top: 15px;
+    margin-top: 10px;
 }
-
 .feedback-content strong {
     display: inline-block;
     margin-bottom: 8px;
     color: #495057;
 }
-
 .content-text {
     background-color: #f8f9fa;
     padding: 15px;
     border-radius: 8px;
     border: 1px solid #e9ecef;
 }
-
 @media (max-width: 767px) {
     .meta-label {
         min-width: 60px;
-        font-size: 0.7rem; /* Giảm kích thước chữ trên mobile */
+        font-size: 0.7rem;
     }
-    
     .meta-item {
-        margin-bottom: 4px; /* Giảm khoảng cách trên mobile */
+        margin-bottom: 4px;
     }
-    
     .feedback-status {
         font-size: 0.6rem;
         padding: 2px 4px;
     }
-}
-
-.attachments-container {
-    margin-top: 10px;
-    width: 100%;
-}
-.attachment-preview {
-    margin-top: 8px;
-    background-color: rgba(0,0,0,0.05);
-    border-radius: 8px;
-    padding: 8px 12px;
-    display: flex;
-    align-items: center;
-    margin-bottom: 5px;
-    width: 100%;
-}
-.attachment-preview i {
-    margin-right: 8px;
-    font-size: 18px;
-}
-.attachment-preview a {
-    color: inherit;
-    text-decoration: none;
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.message-user .attachment-preview {
-    background-color: rgba(255,255,255,0.2);
-}
-.message-user .attachment-preview a {
-    color: white;
-}
-.attachment-image {
-    max-width: 200px;
-    max-height: 200px;
-    border-radius: 8px;
-    margin-top: 8px;
-    cursor: pointer;
-    margin-bottom: 5px;
-}
-
-/* Find the CSS for meta-item and meta-label and update them to reduce spacing */
-.meta-item {
-   margin-bottom: 3px; /* Reduce from 5px to 3px */
-   display: flex;
-   align-items: baseline;
-}
-
-.meta-label {
-   min-width: 80px; /* Reduce from 90px to 80px */
-   font-weight: 500;
-   color: #495057;
-   font-size: 12px;
-}
-
-.feedback-meta {
-   margin-bottom: 10px; /* Reduce from 15px to 10px */
-}
-
-/* Find the feedback-content CSS and update it */
-.feedback-content {
-   margin-top: 10px; /* Reduce from 15px to 10px */
 }
 </style>
 </head>
@@ -1296,911 +1258,671 @@ body {
             <div class="toast-message"><?php echo $success_message; ?></div>
         </div>
         <?php endif; ?>
-        
         <?php if (!empty($error_message)): ?>
         <div class="toast error">
             <div class="toast-icon"><i class="fas fa-exclamation-circle"></i></div>
             <div class="toast-message"><?php echo $error_message; ?></div>
-        <?php endif; ?>
-    </div>
-    
-    
-<div class="feedback-card">
-    <div class="feedback-header">
-        <div class="d-flex flex-column">
-            <h5 class="feedback-title"><?php echo htmlspecialchars($feedback['title']); ?></h5>
-        </div>
-        <button type="button" class="close-btn" onclick="window.location.href='dashboard.php'">
-            <i class="fas fa-times"></i>
-        </button>
-    </div>
-    
-    <div class="main-content">
-        <div class="combined-scroll-container">
-            <div class="feedback-info">
-<div class="feedback-meta">
-<div class="meta-item">
-   <span class="meta-label">Ngày gửi:</span>
-   <strong><?php echo formatDate($feedback['created_at'], true); ?></strong>
-</div>
-   <div class="meta-item">
-       <span class="meta-label">Người gửi:</span>
-       <strong><?php echo htmlspecialchars($feedback['staff_id']); ?> - <?php echo htmlspecialchars($sender_name); ?></strong>
-   </div>
-   <div class="meta-item">
-       <?php
-       // Lấy bộ phận của người gửi
-       $sender_department = "";
-       if (!$feedback['is_anonymous'] && !empty($feedback['staff_id'])) {
-           $sender_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $feedback['staff_id']);
-       }
-       ?>
-       <span class="meta-label">Bộ phận:</span>
-       <strong><?php echo !empty($sender_department) ? htmlspecialchars($sender_department) : 'Không xác định'; ?></strong>
-   </div>
-   <div class="meta-item">
-      <span class="meta-label">Trạng thái:</span>
-      <span class="feedback-status status-<?php 
-    echo $feedback['status'] == 1 ? 'waiting' : 
-        ($feedback['status'] == 2 ? 'responded' : 'completed'); 
-?>">
-         <?php if ($feedback['status'] == 1): ?>
-    <i class="far fa-clock mr-1"></i>
-<?php elseif ($feedback['status'] == 2): ?>
-    <i class="fas fa-reply mr-1"></i>
-<?php elseif ($feedback['status'] == 3): ?>
-    <i class="fas fa-check-circle mr-1"></i>
-<?php else: ?>
-    <i class="fas fa-check-circle mr-1"></i>
-<?php endif; ?>
-          <?php echo getStatusText($feedback['status']); ?>
-      </span>
-  </div>
-</div>
-
-<div class="feedback-content">
-   <div><strong>Nội dung:</strong></div>
-   
-       <?php 
-       // Fix line break issue by properly converting stored line breaks
-       $content = $feedback['content'];
-
-       // Nếu nội dung có các chuỗi "\\r\n" (escaped line break), chuyển về dạng thật
-       $content = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $content);
-       $content = str_replace("\\r\\n", "\r\n", $content);
-       
-       // Hiển thị nội dung, giữ dòng gốc, bảo mật HTML
-       echo '<div style="white-space: pre-wrap; word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; font-size: 15px;">' . htmlspecialchars($content) . '</div>';
-       ?>
-</div>
-                
-                <?php if (!empty($feedback_attachments)): ?>
-                <div class="attachments-container">
-                  <div class="row">
-                  <?php foreach ($feedback_attachments as $attachment): ?>
-                      <?php if ($attachment['type'] === 'image'): ?>
-                      <div class="col-md-4 col-6 mb-2">
-                          <img src="<?php echo htmlspecialchars($attachment['path']); ?>" alt="Hình ảnh đính kèm" 
-                              class="img-fluid rounded" style="max-height: 150px; cursor: pointer;" 
-                              onclick="openImageModal('<?php echo htmlspecialchars($attachment['path']); ?>')">
-                      </div>
-                      <?php elseif ($attachment['type'] === 'pdf'): ?>
-                      <div class="col-12 mb-2">
-                          <div class="attachment-preview">
-                              <i class="fas fa-file-pdf text-danger"></i>
-                              <a href="<?php echo htmlspecialchars($attachment['path']); ?>" target="_blank">
-                                  <?php echo htmlspecialchars($attachment['name']); ?>
-                              </a>
-                              <a href="<?php echo htmlspecialchars($attachment['path']); ?>" download class="ml-auto">
-                                  <i class="fas fa-download"></i>
-                              </a>
-                          </div>
-                      </div>
-                      <?php else: ?>
-                      <div class="col-12 mb-2">
-                          <div class="attachment-preview">
-                              <i class="fas fa-file-<?php echo getFileIconClass($attachment['ext']); ?>"></i>
-                              <a href="<?php echo htmlspecialchars($attachment['path']); ?>" target="_blank" download>
-                          <?php echo htmlspecialchars($attachment['name']); ?>
-                      </a>
-                  </div>
-              </div>
-              <?php endif; ?>
-          <?php endforeach; ?>
-          </div>
         </div>
         <?php endif; ?>
     </div>
-<?php if ($feedback['status'] > 1): ?>
-<div class="response-label">
-    <h6>Phản hồi:</h6>
-</div>
-<?php endif; ?>
-   
-<?php
-// Tìm đoạn code hiển thị chat container (khoảng dòng 500-600)
-// Thay thế TOÀN BỘ đoạn code hiển thị chat container bằng đoạn này:
-?>
-<div class="chat-container" id="chatContainer" style="<?php echo $show_chat ? '' : 'display: none;'; ?>">
-    <?php if ($is_own_anonymous_to_own_dept && $feedback['status'] == 1): ?>
-    <div class="system-message">
-        <span>Ý kiến ẩn danh của bạn đang chờ xử lý. Bạn không thể tự chat với chính mình, vui lòng chờ người khác trong bộ phận xử lý phản hồi.</span>
-    </div>
-    <?php elseif ($is_owner && $feedback['status'] == 1): ?>
-    <div class="system-message">
-        <span>Ý kiến của bạn đang chờ xử lý. Bạn sẽ nhận được phản hồi sớm.</span>
-    </div>
-    <?php elseif (empty($responses)): ?>
-    <div class="system-message">
-        <span>Chưa có phản hồi nào.</span>
-    </div>
-    <?php else: ?>
-        <?php foreach ($responses as $response): ?>
-            <div class="message <?php echo $response['responder_id'] == $mysql_user ? 'message-user' : 'message-other'; ?>">
-                <div class="message-header">
-                    <?php 
-                    // Kiểm tra xem tin nhắn có phải của người đang xem không
-                    if ($response['responder_id'] == $mysql_user) {
-                        echo 'Bạn';
-                    } else {
-                        // Lấy bộ phận của người gửi tin nhắn
-                        $responder_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $response['responder_id']);
-                        
-                        // Lấy tên của người gửi tin nhắn
-                        $responder_name = isset($response['name']) ? $response['name'] : '';
-                        
-                        // Kiểm tra xem người gửi tin nhắn có thuộc bộ phận xử lý không
-                        if ($responder_dept == $feedback['handling_department']) {
-                            // Nếu thuộc bộ phận xử lý, hiển thị tên bộ phận
-                            echo htmlspecialchars($responder_dept);
-                        } else if ($feedback['is_anonymous'] == 1) {
-                            // Nếu feedback là ẩn danh
-                            $anonymous_codes = isset($_SESSION['anonymous_codes']) ? $_SESSION['anonymous_codes'] : [];
-                            
-                            // Nếu người gửi tin nhắn là người tạo feedback ẩn danh
-                            if (in_array($feedback['anonymous_code'], $anonymous_codes)) {
-                                echo 'Ẩn danh';
-                            } else {
-                                // Hiển thị tên người gửi
-                                echo htmlspecialchars($responder_name);
+    
+    <div class="feedback-card">
+        <div class="feedback-header">
+            <div class="d-flex flex-column">
+                <h5 class="feedback-title"><?php echo htmlspecialchars($feedback['title']); ?></h5>
+            </div>
+            <button type="button" class="close-btn" onclick="window.location.href='dashboard.php'">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="main-content">
+            <div class="combined-scroll-container">
+                <div class="feedback-info">
+                    <div class="feedback-meta">
+                        <div class="meta-item">
+                            <span class="meta-label">Ngày gửi:</span>
+                            <strong><?php echo formatDate($feedback['created_at'], true); ?></strong>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Người gửi:</span>
+                            <strong><?php echo htmlspecialchars($feedback['staff_id']); ?> - <?php echo htmlspecialchars($sender_name); ?></strong>
+                        </div>
+                        <div class="meta-item">
+                            <?php
+                            $sender_department = "";
+                            if (!$feedback['is_anonymous'] && !empty($feedback['staff_id'])) {
+                                $sender_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $feedback['staff_id']);
                             }
-                        } else {
-                            // Nếu không thuộc bộ phận xử lý và không phải ẩn danh, hiển thị tên
-                            echo htmlspecialchars($responder_name);
-                        }
-                    } 
-                    ?> • <?php echo formatDate($response['created_at'], true); ?>
-                </div>
-                
-                <div class="message-bubble">
-                    <div class="message-text">
+                            ?>
+                            <span class="meta-label">Bộ phận:</span>
+                            <strong><?php echo !empty($sender_department) ? htmlspecialchars($sender_department) : 'Không xác định'; ?></strong>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Trạng thái:</span>
+                            <span class="feedback-status status-<?php 
+                                echo $feedback['status'] == 1 ? 'waiting' : 
+                                    ($feedback['status'] == 2 ? 'responded' : 'completed'); 
+                            ?>">
+                                <?php if ($feedback['status'] == 1): ?>
+                                    <i class="far fa-clock mr-1"></i>
+                                <?php elseif ($feedback['status'] == 2): ?>
+                                    <i class="fas fa-reply mr-1"></i>
+                                <?php elseif ($feedback['status'] == 3): ?>
+                                    <i class="fas fa-check-circle mr-1"></i>
+                                <?php else: ?>
+                                    <i class="fas fa-check-circle mr-1"></i>
+                                <?php endif; ?>
+                                <?php echo getStatusText($feedback['status']); ?>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="feedback-content">
+                        <div><strong>Nội dung:</strong></div>
                         <?php 
-                        // Fix line break issue by properly converting stored line breaks
-                        $response_text = $response['response'];
-
-                        // Chuyển các ký tự xuống dòng escaped về dạng thật
-                        $response_text = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $response_text);
-                        $response_text = str_replace("\\r\\n", "\r\n", $response_text);
-
-                        // Hiển thị nội dung giữ nguyên dòng, không cần <br>
-                        echo '<div style="white-space: pre-wrap; word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; font-size: 14px;">' . htmlspecialchars($response_text) . '</div>';
+                        $content = $feedback['content'];
+                        $content = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $content);
+                        $content = str_replace("\\r\\n", "\r\n", $content);
+                        echo '<div style="white-space: pre-wrap; word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; font-size: 15px;">' . htmlspecialchars($content) . '</div>';
                         ?>
                     </div>
                     
-                    <?php if (!empty($response['attachments'])): ?>
+                    <?php if (!empty($feedback_attachments)): ?>
                     <div class="attachments-container">
-                        <?php foreach ($response['attachments'] as $attachment): ?>
-                            <?php 
-                            // Log attachment information for debugging
-                            error_log("Displaying attachment: " . $attachment['file_name'] . ", path: " . $attachment['file_path']);
-                            
-                            $file_ext = pathinfo($attachment['file_path'], PATHINFO_EXTENSION);
-                            $is_image = in_array(strtolower($file_ext), ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
-                            $is_pdf = strtolower($file_ext) === 'pdf';
-                            
-                            if ($is_image): 
-                            ?>
-                            <img src="<?php echo htmlspecialchars($attachment['file_path']); ?>" alt="Hình ảnh đính kèm" 
-                                class="attachment-image" onclick="openImageModal('<?php echo htmlspecialchars($attachment['file_path']); ?>')">
-                            <?php elseif ($is_pdf): ?>
-                            <div class="attachment-preview">
-                                <i class="fas fa-file-pdf text-danger"></i>
-                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank">
-                                    <?php echo htmlspecialchars($attachment['file_name']); ?>
-                                </a>
-                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" download class="ml-auto">
-                                    <i class="fas fa-download"></i>
-                                </a>
-                            </div>
-                            <?php else: ?>
-                            <div class="attachment-preview">
-                                <i class="fas fa-file-<?php echo getFileIconClass($file_ext); ?>"></i>
-                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank" download>
-                                    <?php echo htmlspecialchars($attachment['file_name']); ?>
-                                </a>
-                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" download class="ml-auto">
-                                    <i class="fas fa-download"></i>
-                                </a>
-                            </div>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
+                        <div class="row">
+                            <?php foreach ($feedback_attachments as $attachment): ?>
+                                <?php if ($attachment['type'] === 'image'): ?>
+                                <div class="col-md-4 col-6 mb-2">
+                                    <img src="<?php echo htmlspecialchars($attachment['path']); ?>" alt="Hình ảnh đính kèm" 
+                                        class="img-fluid rounded" style="max-height: 150px; cursor: pointer;" 
+                                        onclick="openImageModal('<?php echo htmlspecialchars($attachment['path']); ?>')">
+                                </div>
+                                <?php elseif ($attachment['type'] === 'pdf'): ?>
+                                <div class="col-12 mb-2">
+                                    <div class="attachment-preview">
+                                        <i class="fas fa-file-pdf text-danger"></i>
+                                        <a href="<?php echo htmlspecialchars($attachment['path']); ?>" target="_blank">
+                                            <?php echo htmlspecialchars($attachment['name']); ?>
+                                        </a>
+                                        <a href="<?php echo htmlspecialchars($attachment['path']); ?>" download class="ml-auto">
+                                            <i class="fas fa-download"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                                <?php else: ?>
+                                <div class="col-12 mb-2">
+                                    <div class="attachment-preview">
+                                        <i class="fas fa-file-<?php echo getFileIconClass($attachment['ext']); ?>"></i>
+                                        <a href="<?php echo htmlspecialchars($attachment['path']); ?>" target="_blank" download>
+                                            <?php echo htmlspecialchars($attachment['name']); ?>
+                                        </a>
+                                    </div>
+                                </div>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                     <?php endif; ?>
                 </div>
-            </div>
-        <?php endforeach; ?>
-        
-        <?php if ($rating): ?>
-        <div class="message message-user">
-            <div class="message-header">
-                <?php echo $feedback['is_anonymous'] ? 'Ẩn danh' : $sender_name; ?> • <?php echo formatDate($rating['created_at']); ?>
-            </div>
-            <div class="message-bubble">
-                <div class="rating-stars">
-                    <?php for ($i = 1; $i <= 5; $i++): ?>
-                    <i class="<?php echo $i <= $rating['rating'] ? 'fas' : 'far'; ?> fa-star"></i>
-                    <?php endfor; ?>
-                </div>
-                <?php if (!empty($rating['comment'])): ?>
-                    <div class="rating-comment">
-                    <?php 
-                    $comment_text = $rating['comment'];
 
-                    // Chuyển các chuỗi xuống dòng dạng text sang ký tự thực
-                    $comment_text = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $comment_text);
-                    $comment_text = str_replace("\\r\\n", "\r\n", $comment_text);
-                    
-                    // Hiển thị nội dung an toàn và giữ nguyên xuống dòng
-                    echo '<div style="white-space: pre-wrap;">' . htmlspecialchars($comment_text) . '</div>';
-                    ?>
+                <?php if ($feedback['status'] > 1): ?>
+                <div class="response-label">
+                    <h6>Phản hồi:</h6>
+                </div>
+                <?php endif; ?>
+                
+                <div class="chat-container" id="chatContainer" style="<?php echo $show_chat ? '' : 'display: none;'; ?>">
+                    <?php if ($is_own_anonymous_to_own_dept && $feedback['status'] == 1): ?>
+                    <div class="system-message">
+                        <span>Ý kiến ẩn danh của bạn đang chờ xử lý. Bạn không thể tự chat với chính mình, vui lòng chờ người khác trong bộ phận xử lý phản hồi.</span>
                     </div>
+                    <?php elseif ($is_owner && $feedback['status'] == 1): ?>
+                    <div class="system-message">
+                        <span>Ý kiến của bạn đang chờ xử lý. Bạn sẽ nhận được phản hồi sớm.</span>
+                    </div>
+                    <?php elseif (empty($responses)): ?>
+                    <div class="system-message">
+                        <span>Chưa có phản hồi nào.</span>
+                    </div>
+                    <?php else: ?>
+                        <?php foreach ($responses as $response): ?>
+                            <div class="message <?php echo $response['responder_id'] == $mysql_user ? 'message-user' : 'message-other'; ?>">
+                                <div class="message-header">
+                                    <?php 
+                                    if ($response['responder_id'] == $mysql_user) {
+                                        echo 'Bạn';
+                                    } else {
+                                        $responder_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $response['responder_id']);
+                                        $responder_name = isset($response['name']) ? $response['name'] : '';
+                                        if ($responder_dept == $feedback['handling_department']) {
+                                            echo htmlspecialchars($responder_dept);
+                                        } else if ($feedback['is_anonymous'] == 1) {
+                                            $anonymous_codes = isset($_SESSION['anonymous_codes']) ? $_SESSION['anonymous_codes'] : [];
+                                            if (in_array($feedback['anonymous_code'], $anonymous_codes)) {
+                                                echo 'Ẩn danh';
+                                            } else {
+                                                echo htmlspecialchars($responder_name);
+                                            }
+                                        } else {
+                                            echo htmlspecialchars($responder_name);
+                                        }
+                                    } 
+                                    ?> • <?php echo formatDate($response['created_at'], true); ?>
+                                </div>
+                                
+                                <div class="message-bubble">
+                                    <div class="message-text">
+                                        <?php 
+                                        $response_text = $response['response'];
+                                        $response_text = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $response_text);
+                                        $response_text = str_replace("\\r\\n", "\r\n", $response_text);
+                                        echo '<div style="white-space: pre-wrap; word-wrap: break-word; word-break: break-word; overflow-wrap: break-word; font-size: 14px;">' . htmlspecialchars($response_text) . '</div>';
+                                        ?>
+                                    </div>
+                                    
+                                    <?php if (!empty($response['attachments'])): ?>
+                                    <div class="attachments-container">
+                                        <?php foreach ($response['attachments'] as $attachment): ?>
+                                            <?php 
+                                            error_log("Displaying attachment: " . $attachment['file_name'] . ", path: " . $attachment['file_path']);
+                                            $file_ext = pathinfo($attachment['file_path'], PATHINFO_EXTENSION);
+                                            $is_image = in_array(strtolower($file_ext), ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+                                            $is_pdf = strtolower($file_ext) === 'pdf';
+                                            if ($is_image): 
+                                            ?>
+                                            <img src="<?php echo htmlspecialchars($attachment['file_path']); ?>" alt="Hình ảnh đính kèm" 
+                                                class="attachment-image" onclick="openImageModal('<?php echo htmlspecialchars($attachment['file_path']); ?>')">
+                                            <?php elseif ($is_pdf): ?>
+                                            <div class="attachment-preview">
+                                                <i class="fas fa-file-pdf text-danger"></i>
+                                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank">
+                                                    <?php echo htmlspecialchars($attachment['file_name']); ?>
+                                                </a>
+                                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" download class="ml-auto">
+                                                    <i class="fas fa-download"></i>
+                                                </a>
+                                            </div>
+                                            <?php else: ?>
+                                            <div class="attachment-preview">
+                                                <i class="fas fa-file-<?php echo getFileIconClass($file_ext); ?>"></i>
+                                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank" download>
+                                                    <?php echo htmlspecialchars($attachment['file_name']); ?>
+                                                </a>
+                                                <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" download class="ml-auto">
+                                                    <i class="fas fa-download"></i>
+                                                </a>
+                                            </div>
+                                            <?php endif; ?>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                        
+                        <?php if ($rating): ?>
+                        <div class="message message-user">
+                            <div class="message-header">
+                                <?php echo $feedback['is_anonymous'] ? 'Ẩn danh' : $sender_name; ?> • <?php echo formatDate($rating['created_at']); ?>
+                            </div>
+                            <div class="message-bubble">
+                                <div class="rating-stars">
+                                    <?php for ($i = 1; $i <= 5; $i++): ?>
+                                    <i class="<?php echo $i <= $rating['rating'] ? 'fas' : 'far'; ?> fa-star"></i>
+                                    <?php endfor; ?>
+                                </div>
+                                <?php if (!empty($rating['comment'])): ?>
+                                    <div class="rating-comment">
+                                    <?php 
+                                    $comment_text = $rating['comment'];
+                                    $comment_text = str_replace("\\r\\n\\r\\n", "\r\n\r\n", $comment_text);
+                                    $comment_text = str_replace("\\r\\n", "\r\n", $comment_text);
+                                    echo '<div style="white-space: pre-wrap;">' . htmlspecialchars($comment_text) . '</div>';
+                                    ?>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                       
+                        <?php if ($is_owner && $feedback['status'] == 2 && !$rating): ?>
+                        <div class="rating-container d-block">
+                            <button type="button" class="rating-btn" id="showRatingBtn">
+                                <i class="fas fa-star"></i> Đánh giá phản hồi
+                            </button>
+                        </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+
+                <?php if ($can_reply): ?>
+                <div class="chat-input-container">
+                    <form method="post" action="" enctype="multipart/form-data" class="chat-form">
+                        <div class="chat-input-wrapper">
+                            <textarea class="chat-input" name="response" placeholder="Nhập phản hồi của bạn..." required></textarea>
+                            <div class="chat-actions">
+                                <label for="attachments" class="attachment-btn">
+                                    <i class="fas fa-paperclip"></i>
+                                </label>
+                                <button type="submit" name="submit_response" class="send-btn">
+                                    <i class="fas fa-paper-plane"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <input type="file" id="attachments" name="attachments[]" multiple class="d-none">
+                        
+                        <div id="filePreview" class="file-preview-list"></div>
+                    </form>
+                </div>
                 <?php endif; ?>
             </div>
         </div>
-        <?php endif; ?>
-       
-        <?php if ($is_owner && $feedback['status'] == 2 && !$rating): ?>
-        <div class="rating-container d-block">
-          <button type="button" class="rating-btn" id="showRatingBtn">
-              <i class="fas fa-star"></i> Đánh giá phản hồi
-          </button>
-        </div>
-        <?php endif; ?>
-    <?php endif; ?>
-</div>
-
-<?php if ($can_reply): ?>
-<div class="chat-input-container">
- <form method="post" action="" enctype="multipart/form-data" class="chat-form">
-     <div class="chat-input-wrapper">
-         <textarea class="chat-input" name="response" placeholder="Nhập phản hồi của bạn..." required></textarea>
-         <div class="chat-actions">
-             <label for="attachments" class="attachment-btn">
-                 <i class="fas fa-paperclip"></i>
-             </label>
-             <button type="submit" name="submit_response" class="send-btn">
-                 <i class="fas fa-paper-plane"></i>
-             </button>
-         </div>
-     </div>
-     
-     <input type="file" id="attachments" name="attachments[]" multiple class="d-none">
-     
-     <div id="filePreview" class="file-preview-list" style="display: none;"></div>
- </form>
-</div>
-<?php endif; ?>
-</div>
-</div>
-
-<!-- Image Modal -->
-<div id="imageModal" class="image-modal">
-<span class="image-modal-close" onclick="closeImageModal()">&times;</span>
-<img class="image-modal-content" id="modalImage">
-</div>
-
-<!-- Rating Modal -->
-<div id="ratingModal" class="modal">
-<div class="modal-content">
-    <div class="modal-header">
-        <h5 class="modal-title">Đánh giá phản hồi</h5>
-        <button type="button" class="modal-close" id="closeRatingModal">&times;</button>
     </div>
-    <div class="modal-body">
-        <form method="post" action="" class="rating-form">
-            <div class="stars">
-                <div class="star-rating">
-                    <input type="hidden" name="rating" id="selected-rating" value="0">
-                    <div class="star-container" style="text-align: center; margin-bottom: 20px;">
-                        <i class="far fa-star star-item" data-rating="1"></i>
-                        <i class="far fa-star star-item" data-rating="2"></i>
-                        <i class="far fa-star star-item" data-rating="3"></i>
-                        <i class="far fa-star star-item" data-rating="4"></i>
-                        <i class="far fa-star star-item" data-rating="5"></i>
+
+    <!-- Image Modal -->
+    <div id="imageModal" class="image-modal">
+        <span class="image-modal-close" onclick="closeImageModal()">×</span>
+        <img class="image-modal-content" id="modalImage">
+    </div>
+
+    <!-- Rating Modal -->
+    <div id="ratingModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Đánh giá phản hồi</h5>
+                <button type="button" class="modal-close" id="closeRatingModal">×</button>
+            </div>
+            <div class="modal-body">
+                <form method="post" action="" class="rating-form">
+                    <div class="stars">
+                        <div class="star-rating">
+                            <input type="hidden" name="rating" id="selected-rating" value="0">
+                            <div class="star-container" style="text-align: center; margin-bottom: 20px;">
+                                <i class="far fa-star star-item" data-rating="1"></i>
+                                <i class="far fa-star star-item" data-rating="2"></i>
+                                <i class="far fa-star star-item" data-rating="3"></i>
+                                <i class="far fa-star star-item" data-rating="4"></i>
+                                <i class="far fa-star star-item" data-rating="5"></i>
+                            </div>
+                        </div>
                     </div>
-                </div>
+                    <div class="form-group">
+                        <textarea class="form-control" name="rating_comment" placeholder="Nhận xét của bạn (không bắt buộc)" rows="3"></textarea>
+                    </div>
+                    <div class="text-right">
+                        <button type="submit" name="submit_rating" class="btn btn-primary" id="submit-rating-btn" disabled>Gửi đánh giá</button>
+                    </div>
+                </form>
             </div>
-            <div class="form-group">
-                <textarea class="form-control" name="rating_comment" placeholder="Nhận xét của bạn (không bắt buộc)" rows="3"></textarea>
-            </div>
-            <div class="text-right">
-                <button type="submit" name="submit_rating" class="btn btn-primary" id="submit-rating-btn" disabled>Gửi đánh giá</button>
-            </div>
-        </form>
+        </div>
     </div>
-</div>
-</div>
 
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-$(document).ready(function() {
-   // Scroll to bottom of chat container
-   scrollToBottom();
-   
-   // Handle rating modal
-   $("#showRatingBtn, #showRatingBtnMobile").click(function() {
-       $("#ratingModal").fadeIn();
-   });
-   
-   $("#closeRatingModal").click(function() {
-       $("#ratingModal").fadeOut();
-   });
-   
-   // Close modal when clicking outside
-   $(window).click(function(event) {
-       if ($(event.target).is("#ratingModal")) {
-           $("#ratingModal").fadeOut();
-       }
-       if ($(event.target).is("#imageModal")) {
-           closeImageModal();
-       }
-   });
-   
-   // New star rating system
-   $('.star-item').on('click', function() {
-       const rating = $(this).data('rating');
-       $('#selected-rating').val(rating);
-       
-       // Update stars display
-       $('.star-item').each(function() {
-           const starValue = $(this).data('rating');
-           if (starValue <= rating) {
-               $(this).removeClass('far').addClass('fas');
-           } else {
-               $(this).removeClass('fas').addClass('far');
-           }
-       });
-       
-       // Enable submit button
-       $('#submit-rating-btn').prop('disabled', false);
-   });
-   
-   // Hover effect for stars
-   $('.star-item').hover(
-       function() {
-           const hoverRating = $(this).data('rating');
-           
-           $('.star-item').each(function() {
-               const starValue = $(this).data('rating');
-               if (starValue <= hoverRating) {
-                   $(this).removeClass('far').addClass('fas');
-               }
-           });
-       },
-       function() {
-           const selectedRating = $('#selected-rating').val();
-           
-           $('.star-item').each(function() {
-               const starValue = $(this).data('rating');
-               if (starValue <= selectedRating) {
-                   $(this).removeClass('far').addClass('fas');
-               } else {
-                   $(this).removeClass('fas').addClass('far');
-               }
-           });
-       }
-   );
-   
-   // File upload handling
-   $('#attachments').change(function() {
-       const files = this.files;
-       if (files.length > 0) {
-           const filePreview = $('#filePreview');
-           filePreview.html('');
-           filePreview.show();
-           
-           // Create preview for each file
-           for (let i = 0; i < files.length; i++) {
-               const file = files[i];
-               const fileItem = $('<div class="file-preview-item"></div>');
-               const icon = getFileIcon(file.name);
-               
-               fileItem.append(`<i class="${icon}"></i>`);
-               fileItem.append(`<span class="file-preview-name">${file.name}</span>`);
-               fileItem.append(`<span class="text-muted ml-2">(${formatFileSize(file.size)})</span>`);
-               fileItem.append(`<span class="file-preview-remove" data-index="${i}"><i class="fas fa-times"></i></span>`);
-               
-               filePreview.append(fileItem);
-           }
-       } else {
-           $('#filePreview').hide();
-       }
-   });
-   
-   // Remove file from selection
-   $(document).on('click', '.file-preview-remove', function() {
-       const index = $(this).data('index');
-       const input = document.getElementById('attachments');
-       
-       // Create a new FileList without the removed file
-       const dt = new DataTransfer();
-       const files = input.files;
-       
-       for (let i = 0; i < files.length; i++) {
-           if (i !== index) {
-               dt.items.add(files[i]);
-           }
-       }
-       
-       input.files = dt.files;
-       
-       // Trigger change event to update preview
-       $(input).trigger('change');
-   });
-   
-   // Auto-resize textarea
-   $('.chat-input').on('input', function() {
-       this.style.height = 'auto';
-       this.style.height = (this.scrollHeight) + 'px';
-   });
-   
-   // Hiển thị toast khi trang tải xong
-   if ($('.toast').length > 0) {
-       $('.toast').each(function() {
-           $(this).css('opacity', '1');
-           
-           // Tự động ẩn sau 4 giây
-           setTimeout(() => {
-               $(this).css('opacity', '0');
-               $(this).css('transform', 'translateY(-20px)');
-               
-               // Xóa khỏi DOM sau khi animation hoàn tất
-               setTimeout(() => {
-                   $(this).remove();
-               }, 500);
-           }, 4000);
-       });
-   }
-   
-   // Cải thiện trải nghiệm cuộn
-   setupScrolling();
-   
-   // Thêm sự kiện resize
-   window.addEventListener('resize', function() {
-       setupScrolling();
-   });
-   
-   // Quan trọng: Đánh dấu feedback đã đọc và lưu vào localStorage
-   const feedbackId = <?php echo $feedback_id; ?>;
-   
-   // Lưu vào localStorage để dashboard biết feedback này đã được đọc
-   localStorage.setItem('feedback_' + feedbackId + '_read', 'true');
-});
-
-
-// Function to scroll to bottom of chat container
-function scrollToBottom() {
-   const chatContainer = document.getElementById('chatContainer');
-   if (chatContainer) {
-       chatContainer.scrollTop = chatContainer.scrollHeight;
-   }
-}
-
-// Function to open image modal
-function openImageModal(imageSrc) {
-   const modal = document.getElementById('imageModal');
-   const modalImg = document.getElementById('modalImage');
-   
-   modal.style.display = 'block';
-   modalImg.src = imageSrc;
-   
-   // Add animation
-   setTimeout(() => {
-       modal.style.opacity = '1';
-   }, 10);
-}
-
-// Function to close image modal
-function closeImageModal() {
-   const modal = document.getElementById('imageModal');
-   modal.style.opacity = '0';
-   
-   // Wait for animation to complete
-   setTimeout(() => {
-       modal.style.display = 'none';
-   }, 300);
-}
-
-// Function to setup proper scrolling
-function setupScrolling() {
-    // Đảm bảo cuộn đến cuối khi có tin nhắn mới
-    scrollToBottom();
-    
-    // Xử lý vấn đề với viewport height
-    const vh = window.innerHeight * 0.01;
-    document.documentElement.style.setProperty('--vh', `${vh}px`);
-    
-    // Điều chỉnh chiều cao container trên mobile
-    if (window.innerWidth <= 767) {
-        document.querySelector('.container').style.height = `${window.innerHeight}px`;
-        document.querySelector('.feedback-card').style.height = `${window.innerHeight}px`;
-    }
-}
-
-// Thêm sự kiện resize để cập nhật kích thước khi xoay màn hình
-window.addEventListener('resize', function() {
-    setupScrolling();
-});
-
-// Gọi setupScrolling khi trang tải xong
-$(document).ready(function() {
-    setupScrolling();
-    // Các code khác giữ nguyên
-});
-
-// Helper function to get file icon based on extension
-function getFileIcon(fileName) {
-   const ext = fileName.split('.').pop().toLowerCase();
-   
-   switch(ext) {
-       case 'pdf':
-           return 'fas fa-file-pdf text-danger';
-       case 'doc':
-       case 'docx':
-           return 'fas fa-file-word text-primary';
-       case 'xls':
-       case 'xlsx':
-           return 'fas fa-file-excel text-success';
-       case 'ppt':
-       case 'pptx':
-           return 'fas fa-file-powerpoint text-warning';
-       case 'txt':
-       case 'rtf':
-           return 'fas fa-file-alt text-secondary';
-       case 'csv':
-           return 'fas fa-file-csv text-success';
-       case 'jpg':
-       case 'jpeg':
-       case 'png':
-       case 'gif':
-       case 'bmp':
-       case 'webp':
-           return 'fas fa-file-image text-info';
-       default:
-           return 'fas fa-file text-secondary';
-   }
-}
-
-// Helper function to format file size
-function formatFileSize(bytes) {
-   if (bytes < 1024) {
-       return bytes + ' B';
-   } else if (bytes < 1024 * 1024) {
-       return (bytes / 1024).toFixed(1) + ' KB';
-   } else {
-       return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-   }
-}
-
-// Set a flag in sessionStorage to indicate we're leaving the view_feedback page
-// This will be checked when we return to the dashboard to refresh notifications
-$(window).on('beforeunload', function() {
-    sessionStorage.setItem('refreshAfterViewFeedback', 'true');
-});
-
-// Clear existing notifications for this feedback
-$(document).ready(function() {
-   const feedbackId = <?php echo $feedback['id']; ?>;
-   
-   // Cập nhật thời gian đọc cuối cùng khi người dùng xem feedback
-   $.ajax({
-       url: 'mark_messages_read.php',
-       type: 'POST',
-       data: { feedback_id: feedbackId },
-       dataType: 'json',
-       success: function(response) {
-           if (response.success) {
-               console.log('Đã đánh dấu tin nhắn là đã đọc');
-               
-               // Đặt flag để dashboard biết cần tải lại khi quay lại
-               sessionStorage.setItem('refreshAfterViewFeedback', 'true');
-               
-               // Lưu danh sách các feedback đã xem
-               let viewedFeedbacks = JSON.parse(sessionStorage.getItem('viewedFeedbacks') || '[]');
-               if (!viewedFeedbacks.includes(feedbackId)) {
-                   viewedFeedbacks.push(feedbackId);
-                   sessionStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
-               }
-           }
-       }
-   });
-   
-   // Cập nhật localStorage để đánh dấu feedback là đã xem
-   const viewedFeedbacks = JSON.parse(localStorage.getItem('viewedFeedbacks') || '{}');
-   viewedFeedbacks[feedbackId] = new Date().toISOString();
-   localStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
-});
-
-// Set a flag in sessionStorage to indicate we're leaving the view_feedback page
-// This will be checked when we return to the dashboard to refresh notifications
-$(window).on('beforeunload', function() {
-   const feedbackId = <?php echo $feedback['id']; ?>;
-   sessionStorage.setItem('refreshAfterViewFeedback', 'true');
-   
-   // Lưu danh sách các feedback đã xem
-   let viewedFeedbacks = JSON.parse(sessionStorage.getItem('viewedFeedbacks') || '[]');
-   if (!viewedFeedbacks.includes(feedbackId)) {
-       viewedFeedbacks.push(feedbackId);
-       sessionStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
-   }
-});
-
-$(document).ready(function() {
-    // Mark messages as read when viewing a feedback
-    const feedbackId = <?php echo $feedback_id; ?>;
-    
-    $.ajax({
-        url: 'mark_messages_read.php',
-        type: 'POST',
-        data: {
-            feedback_id: feedbackId
-        },
-        dataType: 'json',
-        success: function(response) {
-            console.log('Marked messages as read for feedback:', feedbackId);
-        }
-    });
-    
-    // Set a flag to refresh notifications when returning to dashboard
-    sessionStorage.setItem('refreshAfterViewFeedback', 'true');
-});
-
-// Set a flag in sessionStorage when leaving the page
-$(window).on('beforeunload', function() {
-    sessionStorage.setItem('refreshAfterViewFeedback', 'true');
-});
-</script>
-
-<script>
-// Đảm bảo chiều cao viewport được tính đúng trên thiết bị di động
-function setMobileHeight() {
-    // Đặt biến CSS --vh để sử dụng trong CSS
-    let vh = window.innerHeight * 0.01;
-    document.documentElement.style.setProperty('--vh', `${vh}px`);
-    
-    // Điều chỉnh chiều cao container trên mobile
-    if (window.innerWidth <= 767) {
-        document.querySelector('.container').style.height = `${window.innerHeight}px`;
-        document.querySelector('.feedback-card').style.height = `${window.innerHeight}px`;
-    }
-}
-
-// Gọi hàm khi trang tải và khi thay đổi kích thước
-window.addEventListener('load', setMobileHeight);
-window.addEventListener('resize', setMobileHeight);
-window.addEventListener('orientationchange', setMobileHeight);
-
-// Đảm bảo thanh cuộn hoạt động đúng
-document.addEventListener('DOMContentLoaded', function() {
-    // Đảm bảo chat container có thể cuộn
-    const chatContainer = document.getElementById('chatContainer');
-    if (chatContainer) {
-        chatContainer.style.overflowY = 'auto';
-        chatContainer.style.webkitOverflowScrolling = 'touch';
-    }
-    
-    // Đảm bảo feedback info có thể cuộn
-    const feedbackInfo = document.querySelector('.feedback-info');
-    if (feedbackInfo) {
-        feedbackInfo.style.overflowY = 'auto';
-        feedbackInfo.style.webkitOverflowScrolling = 'touch';
-    }
-    
-    // Cuộn xuống cuối chat container
-    scrollToBottom();
-});
-</script>
-
-<style>
-/* Add this CSS rule to ensure proper padding on mobile */
-@media (max-width: 767px) {
-    .feedback-header {
-        padding: 20px;
-        position: relative;
-    }
-    
-    .close-btn {
-        top: 10px;
-        right: 10px;
-    }
-    
-    .feedback-title {
-        padding-right: 20px;
-        font-size: 0.95rem;
-    }
-    
-    .feedback-info {
-        padding: 10px;
-    }
-    
-    .chat-container {
-        padding: 10px;
-    }
-    
-    .chat-input-container {
-        padding: 10px;
-    }
-}
-</style>
-
-<style>
-/* Ensure consistent padding and alignment between header and content */
-@media (max-width: 767px) {
-    .feedback-header {
-        padding: 15px;
-        position: relative;
-    }
-    
-    .close-btn {
-        top: 15px;
-        right: 15px;
-    }
-    
-    .feedback-title {
-        padding-right: 25px;
-        font-size: 1.1rem;
-    }
-    
-    .feedback-info {
-        padding: 15px;
-    }
-    
-    .chat-container {
-        padding: 15px;
-    }
-    
-    .chat-input-container {
-        padding: 15px;
-    }
-}
-</style>
-<script>
-function fixMobileLayout() {
-    // Use actual viewport height instead of vh units which can be inaccurate on mobile
-    const viewportHeight = window.innerHeight;
-    
-    if (window.innerWidth <= 767) {
-        // Set container height
-        document.querySelector('.container').style.height = `${viewportHeight}px`;
-        document.querySelector('.feedback-card').style.height = `${viewportHeight}px`;
-        
-        // Calculate available space for main content
-        const headerHeight = document.querySelector('.feedback-header').offsetHeight;
-        const formHeight = document.querySelector('.chat-form')?.offsetHeight || 0;
-        
-        // Set main content height
-        const mainContent = document.querySelector('.main-content');
-        mainContent.style.height = `${viewportHeight - headerHeight - formHeight}px`;
-        
-        // Make sure chat container fills available space
-        const feedbackInfoHeight = document.querySelector('.feedback-info').offsetHeight;
-        const responseLabel = document.querySelector('.response-label')?.offsetHeight || 0;
-        
-        const chatContainer = document.getElementById('chatContainer');
-        if (chatContainer) {
-            chatContainer.style.minHeight = `${mainContent.offsetHeight - feedbackInfoHeight - responseLabel}px`;
-        }
-    } else {
-        // Reset styles on desktop
-        document.querySelector('.container').style.height = '';
-        document.querySelector('.feedback-card').style.height = '';
-        document.querySelector('.main-content').style.height = '';
-        const chatContainer = document.getElementById('chatContainer');
-        if (chatContainer) {
-            chatContainer.style.minHeight = '';
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // JavaScript version of formatFileSize to handle file size display in file preview
+    function formatFileSize(bytes) {
+        if (bytes < 1024) {
+            return bytes + ' B';
+        } else if (bytes < 1048576) {
+            return (bytes / 1024).toFixed(2) + ' KB';
+        } else {
+            return (bytes / 1048576).toFixed(2) + ' MB';
         }
     }
-    
-    // Scroll to bottom after layout fixes
-    scrollToBottom();
-}
-</script>
 
-<script>
-// Asegurar que los adjuntos se muestren correctamente
-$(document).ready(function() {
-    // Verificar si hay adjuntos en cada mensaje
-    $('.message').each(function() {
-        const attachmentsContainer = $(this).find('.attachments-container');
-        if (attachmentsContainer.length > 0 && attachmentsContainer.children().length === 0) {
-            attachmentsContainer.hide();
-        } else if (attachmentsContainer.length > 0) {
-            attachmentsContainer.show();
-        }
-    });
-    
-    // Manejar errores de carga de imágenes
-    $('.attachment-image').on('error', function() {
-        console.error('Error al cargar la imagen:', $(this).attr('src'));
-        // Reemplazar con un icono de error
-        const errorDiv = $('<div class="attachment-preview"></div>');
-        errorDiv.html('<i class="fas fa-exclamation-triangle text-warning"></i> <span>Error al cargar la imagen</span>');
-        $(this).replaceWith(errorDiv);
-    });
-    
-    // Verificar enlaces de adjuntos
-    $('.attachment-preview a').each(function() {
-        const href = $(this).attr('href');
-        if (!href || href === '#' || href === 'undefined') {
-            console.error('Enlace de adjunto inválido');
-            $(this).addClass('text-danger').attr('title', 'Enlace inválido');
-            $(this).on('click', function(e) {
-                e.preventDefault();
-                alert('No se puede acceder a este archivo');
+    $(document).ready(function() {
+        scrollToBottom();
+        
+        $("#showRatingBtn, #showRatingBtnMobile").click(function() {
+            $("#ratingModal").fadeIn();
+        });
+        
+        $("#closeRatingModal").click(function() {
+            $("#ratingModal").fadeOut();
+        });
+        
+        $(window).click(function(event) {
+            if ($(event.target).is("#ratingModal")) {
+                $("#ratingModal").fadeOut();
+            }
+            if ($(event.target).is("#imageModal")) {
+                closeImageModal();
+            }
+        });
+        
+        $('.star-item').on('click', function() {
+            const rating = $(this).data('rating');
+            $('#selected-rating').val(rating);
+            
+            $('.star-item').each(function() {
+                const starValue = $(this).data('rating');
+                if (starValue <= rating) {
+                    $(this).removeClass('far').addClass('fas');
+                } else {
+                    $(this).removeClass('fas').addClass('far');
+                }
+            });
+            
+            $('#submit-rating-btn').prop('disabled', false);
+        });
+        
+        $('.star-item').hover(
+            function() {
+                const hoverRating = $(this).data('rating');
+                $('.star-item').each(function() {
+                    const starValue = $(this).data('rating');
+                    if (starValue <= hoverRating) {
+                        $(this).removeClass('far').addClass('fas');
+                    }
+                });
+            },
+            function() {
+                const selectedRating = $('#selected-rating').val();
+                $('.star-item').each(function() {
+                    const starValue = $(this).data('rating');
+                    if (starValue <= selectedRating) {
+                        $(this).removeClass('far').addClass('fas');
+                    } else {
+                        $(this).removeClass('fas').addClass('far');
+                    }
+                });
+            }
+        );
+        
+        $('#attachments').change(function() {
+            const files = this.files;
+            const filePreview = $('#filePreview');
+            if (files.length > 0) {
+                filePreview.html('');
+                filePreview.addClass('show');
+                
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    const fileItem = $('<div class="file-preview-item"></div>');
+                    const icon = getFileIcon(file.name);
+                    
+                    fileItem.append(`<i class="${icon}"></i>`);
+                    fileItem.append(`<span class="file-preview-name">${file.name}</span>`);
+                    fileItem.append(`<span class="text-muted ml-2">(${formatFileSize(file.size)})</span>`);
+                    fileItem.append(`<span class="file-preview-remove" data-index="${i}"><i class="fas fa-times"></i></span>`);
+                    
+                    filePreview.append(fileItem);
+                }
+            } else {
+                filePreview.removeClass('show');
+                filePreview.html('');
+            }
+            setMobileHeight();
+        });
+        
+        $(document).on('click', '.file-preview-remove', function() {
+            const index = $(this).data('index');
+            const input = document.getElementById('attachments');
+            
+            const dt = new DataTransfer();
+            const files = input.files;
+            
+            for (let i = 0; i < files.length; i++) {
+                if (i !== index) {
+                    dt.items.add(files[i]);
+                }
+            }
+            
+            input.files = dt.files;
+            $(input).trigger('change');
+        });
+        
+        $('form.chat-form').on('submit', function() {
+            setTimeout(function() {
+                $('#attachments').val('');
+                const filePreview = $('#filePreview');
+                filePreview.html('');
+                filePreview.removeClass('show');
+                $('.chat-input-wrapper').css('margin-bottom', '0');
+                setMobileHeight();
+            }, 100);
+        });
+        
+        $('.chat-input').on('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+            setMobileHeight();
+        });
+        
+        if ($('.toast').length > 0) {
+            $('.toast').each(function() {
+                $(this).css('opacity', '1');
+                setTimeout(() => {
+                    $(this).css('opacity', '0');
+                    $(this).css('transform', 'translateY(-20px)');
+                    setTimeout(() => {
+                        $(this).remove();
+                    }, 500);
+                }, 4000);
             });
         }
-    });
-});
-</script>
-
-
-<script>
-// Asegurar que los adjuntos se muestren correctamente
-$(document).ready(function() {
-    console.log("Verificando adjuntos en mensajes...");
-    
-    // Verificar si hay adjuntos en cada mensaje
-    $('.message').each(function() {
-        const attachmentsContainer = $(this).find('.attachments-container');
-        console.log("Contenedor de adjuntos encontrado:", attachmentsContainer.length);
         
-        if (attachmentsContainer.length > 0) {
-            const attachmentItems = attachmentsContainer.children();
-            console.log("Elementos de adjuntos:", attachmentItems.length);
-            
-            if (attachmentItems.length === 0) {
-                console.log("No hay elementos de adjuntos, ocultando contenedor");
-                attachmentsContainer.hide();
-            } else {
-                console.log("Mostrando contenedor de adjuntos");
-                attachmentsContainer.show();
+        setMobileHeight();
+        window.addEventListener('resize', function() {
+            setMobileHeight();
+        });
+        
+        const feedbackId = <?php echo $feedback_id; ?>;
+        localStorage.setItem('feedback_' + feedbackId + '_read', 'true');
+    });
+
+    function scrollToBottom() {
+        const chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    }
+
+    function openImageModal(imageSrc) {
+        const modal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImage');
+        
+        modal.style.display = 'block';
+        modalImg.src = imageSrc;
+        
+        setTimeout(() => {
+            modal.style.opacity = '1';
+        }, 10);
+    }
+
+    function closeImageModal() {
+        const modal = document.getElementById('imageModal');
+        modal.style.opacity = '0';
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 300);
+    }
+
+    function setMobileHeight() {
+        let vh = window.innerHeight * 0.01;
+        document.documentElement.style.setProperty('--vh', `${vh}px`);
+        if (window.innerWidth <= 767) {
+            const container = document.querySelector('.container');
+            const feedbackCard = document.querySelector('.feedback-card');
+            container.style.height = `${window.innerHeight}px`;
+            feedbackCard.style.height = `${window.innerHeight}px`;
+
+            const headerHeight = document.querySelector('.feedback-header').offsetHeight;
+            const inputContainerHeight = document.querySelector('.chat-input-container')?.offsetHeight || 0;
+            const combinedScrollContainer = document.querySelector('.combined-scroll-container');
+            if (combinedScrollContainer) {
+                combinedScrollContainer.style.height = `calc(100vh - ${headerHeight}px - ${inputContainerHeight}px)`;
+            }
+
+            const chatInputWrapper = document.querySelector('.chat-input-wrapper');
+            if (chatInputWrapper) {
+                chatInputWrapper.style.marginBottom = '0px';
             }
         }
+    }
+
+    window.addEventListener('load', setMobileHeight);
+    window.addEventListener('resize', setMobileHeight);
+    window.addEventListener('orientationchange', setMobileHeight);
+    window.addEventListener('resize', () => {
+        setTimeout(setMobileHeight, 100);
     });
-    
-    // Manejar errores de carga de imágenes
-    $('.attachment-image').on('error', function() {
-        console.error('Error al cargar la imagen:', $(this).attr('src'));
-        // Reemplazar con un icono de error
-        const errorDiv = $('<div class="attachment-preview"></div>');
-        errorDiv.html('<i class="fas fa-exclamation-triangle text-warning"></i> <span>Error al cargar la imagen</span>');
-        $(this).replaceWith(errorDiv);
+
+    function getFileIcon(fileName) {
+        const ext = fileName.split('.').pop().toLowerCase();
+        switch(ext) {
+            case 'pdf':
+                return 'fas fa-file-pdf text-danger';
+            case 'doc':
+            case 'docx':
+                return 'fas fa-file-word text-primary';
+            case 'xls':
+            case 'xlsx':
+                return 'fas fa-file-excel text-success';
+            case 'ppt':
+            case 'pptx':
+                return 'fas fa-file-powerpoint text-warning';
+            case 'txt':
+            case 'rtf':
+                return 'fas fa-file-alt text-secondary';
+            case 'csv':
+                return 'fas fa-file-csv text-success';
+            case 'jpg':
+            case 'jpeg':
+            case 'png':
+            case 'gif':
+            case 'bmp':
+            case 'webp':
+                return 'fas fa-file-image text-info';
+            default:
+                return 'fas fa-file text-secondary';
+        }
+    }
+
+    $(window).on('beforeunload', function() {
+        sessionStorage.setItem('refreshAfterViewFeedback', 'true');
     });
-    
-    // Verificar enlaces de adjuntos
-    $('.attachment-preview a').each(function() {
-        const href = $(this).attr('href');
-        console.log("Verificando enlace de adjunto:", href);
+
+    $(document).ready(function() {
+        const feedbackId = <?php echo $feedback['id']; ?>;
+        $.ajax({
+            url: 'mark_messages_read.php',
+            type: 'POST',
+            data: { feedback_id: feedbackId },
+            dataType: 'json',
+            success: function(response) {
+                if (response.success) {
+                    console.log('Đã đánh dấu tin nhắn là đã đọc');
+                    sessionStorage.setItem('refreshAfterViewFeedback', 'true');
+                    let viewedFeedbacks = JSON.parse(sessionStorage.getItem('viewedFeedbacks') || '[]');
+                    if (!viewedFeedbacks.includes(feedbackId)) {
+                        viewedFeedbacks.push(feedbackId);
+                        sessionStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
+                    }
+                }
+            }
+        });
         
-        if (!href || href === '#' || href === 'undefined') {
-            console.error('Enlace de adjunto inválido');
-            $(this).addClass('text-danger').attr('title', 'Enlace inválido');
-            $(this).on('click', function(e) {
-                e.preventDefault();
-                alert('No se puede acceder a este archivo');
-            });
+        const viewedFeedbacks = JSON.parse(localStorage.getItem('viewedFeedbacks') || '{}');
+        viewedFeedbacks[feedbackId] = new Date().toISOString();
+        localStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
+    });
+
+    $(window).on('beforeunload', function() {
+        const feedbackId = <?php echo $feedback['id']; ?>;
+        sessionStorage.setItem('refreshAfterViewFeedback', 'true');
+        let viewedFeedbacks = JSON.parse(sessionStorage.getItem('viewedFeedbacks') || '[]');
+        if (!viewedFeedbacks.includes(feedbackId)) {
+            viewedFeedbacks.push(feedbackId);
+            sessionStorage.setItem('viewedFeedbacks', JSON.stringify(viewedFeedbacks));
         }
     });
-});
-</script>
+
+    $(document).ready(function() {
+        const feedbackId = <?php echo $feedback_id; ?>;
+        $.ajax({
+            url: 'mark_messages_read.php',
+            type: 'POST',
+            data: {
+                feedback_id: feedbackId
+            },
+            dataType: 'json',
+            success: function(response) {
+                console.log('Marked messages as read for feedback:', feedbackId);
+            }
+        });
+        sessionStorage.setItem('refreshAfterViewFeedback', 'true');
+    });
+
+    $(window).on('beforeunload', function() {
+        sessionStorage.setItem('refreshAfterViewFeedback', 'true');
+    });
+    </script>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) {
+            chatContainer.style.overflowY = 'auto';
+            chatContainer.style.webkitOverflowScrolling = 'touch';
+        }
+        
+        const feedbackInfo = document.querySelector('.feedback-info');
+        if (feedbackInfo) {
+            feedbackInfo.style.overflowY = 'auto';
+            feedbackInfo.style.webkitOverflowScrolling = 'touch';
+        }
+        
+        scrollToBottom();
+    });
+    </script>
+
+    <script>
+    $(document).ready(function() {
+        console.log("Verifying attachments in messages...");
+        
+        $('.message').each(function() {
+            const attachmentsContainer = $(this).find('.attachments-container');
+            console.log("Attachment container found:", attachmentsContainer.length);
+            
+            if (attachmentsContainer.length > 0) {
+                const attachmentItems = attachmentsContainer.children();
+                console.log("Attachment items:", attachmentItems.length);
+                
+                if (attachmentItems.length === 0) {
+                    console.log("No attachment items, hiding container");
+                    attachmentsContainer.hide();
+                } else {
+                    console.log("Showing attachment container");
+                    attachmentsContainer.show();
+                }
+            }
+        });
+        
+        $('.attachment-image').on('error', function() {
+            console.error('Error loading image:', $(this).attr('src'));
+            const errorDiv = $('<div class="attachment-preview"></div>');
+            errorDiv.html('<i class="fas fa-exclamation-triangle text-warning"></i> <span>Error loading image</span>');
+            $(this).replaceWith(errorDiv);
+        });
+        
+        $('.attachment-preview a').each(function() {
+            const href = $(this).attr('href');
+            console.log("Verifying attachment link:", href);
+            
+            if (!href || href === '#' || href === 'undefined') {
+                console.error('Invalid attachment link');
+                $(this).addClass('text-danger').attr('title', 'Invalid link');
+                $(this).on('click', function(e) {
+                    e.preventDefault();
+                    alert('Cannot access this file');
+                });
+            }
+        });
+    });
+    </script>
+</body>
+</html>
