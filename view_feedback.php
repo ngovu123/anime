@@ -3,7 +3,7 @@ session_start();
 include("../connect.php");
 include("functions.php");
 include("email_notification.php");
-
+include("email_functions.php");
 // Check if user is logged in
 if (!isset($_SESSION["SS_username"])) {
     header("Location: login.php");
@@ -12,10 +12,11 @@ if (!isset($_SESSION["SS_username"])) {
 
 $mysql_user = $_SESSION["SS_username"];
 $user_info = getUserDepartmentAndSection($mysql_user);
-$department = $user_info["department"];
+$section = $user_info["section"]; // User's section from user_tb
 
 // Check if feedback ID is provided
 if (!isset($_GET['id']) || empty($_GET['id'])) {
+    error_log("Redirecting to dashboard: No ID provided");
     header("Location: dashboard.php");
     exit();
 }
@@ -37,9 +38,10 @@ if (!file_exists($upload_dir)) {
 }
 
 // Get feedback details
-$sql = "SELECT f.*, u.department as sender_department FROM feedback_tb f 
-    LEFT JOIN user_tb u ON f.staff_id = u.staff_id 
-    WHERE f.id = ?";
+$sql = "SELECT f.*, u.section as sender_section 
+        FROM feedback_tb f 
+        LEFT JOIN user_tb u ON f.staff_id = u.staff_id 
+        WHERE f.id = ?";
 $stmt = $db->prepare($sql);
 $stmt->bind_param("i", $feedback_id);
 $stmt->execute();
@@ -48,32 +50,62 @@ $result = $stmt->get_result();
 if ($result && $result->num_rows > 0) {
     $feedback = $result->fetch_assoc();
 
-    // Check if user is authorized to view this feedback
+    // Check if user is the owner
     if ($feedback['staff_id'] == $mysql_user) {
         $is_owner = true;
         $is_handler = false;
+        error_log("User {$mysql_user} is owner of feedback ID {$feedback_id}");
     } elseif ($feedback['is_anonymous'] == 1 && 
              ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
               (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view'])))) {
         $is_owner = true;
         $is_handler = false;
-    } elseif ($department == $feedback['handling_department']) {
-        $is_handler = true;
-        $is_owner = false;
+        error_log("User {$mysql_user} is anonymous owner of feedback ID {$feedback_id}");
     } else {
-        header("Location: dashboard.php");
-        exit();
+        // Check if user is a handler by matching their section with handling_staff's section in handling_department_tb
+        $sql_handler = "SELECT 1 
+                        FROM handling_department_tb hdt 
+                        JOIN user_tb u ON FIND_IN_SET(u.staff_id, hdt.handling_staff)
+                        WHERE hdt.department_name = ? AND u.section = ?";
+        error_log("SQL: $sql_handler, handling_department: {$feedback['handling_department']}, section: $section");
+        
+        if (empty($feedback['handling_department']) || empty($section)) {
+            error_log("Invalid parameters: handling_department={$feedback['handling_department']}, section=$section");
+            header("Location: dashboard.php");
+            exit();
+        }
+        
+        $stmt_handler = $db->prepare($sql_handler);
+        if ($stmt_handler === false) {
+            error_log("Prepare failed: " . $db->error);
+            header("Location: dashboard.php");
+            exit();
+        }
+        
+        $stmt_handler->bind_param("ss", $feedback['handling_department'], $section);
+        $stmt_handler->execute();
+        $handler_result = $stmt_handler->get_result();
+        if ($handler_result->num_rows > 0) {
+            $is_handler = true;
+            $is_owner = false;
+            error_log("User {$mysql_user} (section: {$section}) is handler for feedback ID {$feedback_id} (handling_department: {$feedback['handling_department']})");
+        } else {
+            error_log("Redirecting to dashboard: User {$mysql_user} (section: {$section}) not authorized for feedback ID {$feedback_id} (handling_department: {$feedback['handling_department']})");
+            header("Location: dashboard.php");
+            exit();
+        }
+        $stmt_handler->close();
     }
 
-    $is_own_anonymous_to_own_dept = false;
+    $is_own_anonymous_to_own_section = false;
     if ($feedback['is_anonymous'] == 1 && $is_handler) {
         if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id]) && 
             $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'] === $mysql_user) {
-            $is_own_anonymous_to_own_dept = true;
+            $is_own_anonymous_to_own_section = true;
         }
     }
 
-    if ($is_own_anonymous_to_own_dept) {
+    if ($is_own_anonymous_to_own_section) {
         $is_handler = false;
     }
 
@@ -100,9 +132,9 @@ if ($result && $result->num_rows > 0) {
 
     // Get responses with attachments
     $sql = "SELECT r.*, u.name FROM feedback_response_tb r 
-        LEFT JOIN user_tb u ON r.responder_id = u.staff_id 
-        WHERE r.feedback_id = ? AND r.response != '' 
-        ORDER BY r.created_at ASC";
+            LEFT JOIN user_tb u ON r.responder_id = u.staff_id 
+            WHERE r.feedback_id = ? AND r.response != '' 
+            ORDER BY r.created_at ASC";
     $stmt = $db->prepare($sql);
     $stmt->bind_param("i", $feedback_id);
     $stmt->execute();
@@ -147,8 +179,28 @@ if ($result && $result->num_rows > 0) {
     </script>";
 
 } else {
+    error_log("Redirecting to dashboard: Feedback ID {$feedback_id} not found");
     header("Location: dashboard.php");
     exit();
+}
+
+function generateProfessionalEmail($subject, $greeting, $body_content, $feedback_id, $feedback_title, $attachment_paths = []) {
+    $body_content_with_attachment = $body_content;
+    if (!empty($attachment_paths)) {
+        $body_content_with_attachment .= '<br><br>Nội dung phản hồi có đính kèm tệp';
+    }
+
+    $content = '
+        <p style="margin: 0 0 12px; color: #333333;">
+            <span style="font-weight: bold; text-decoration: underline;">Kính gửi: </span> ' . htmlspecialchars($greeting) . ',
+        </p>
+        <div style="margin: 0 0 15px; line-height: 1.6; color: #333333;">' . $body_content_with_attachment . '</div>
+        <hr style="border: 0; border-top: 1px solid #e0e0e0; margin: 15px 0;">
+        <p style="margin: 0; font-size: 12px; color: #666666;">Cảm ơn quý vị đã sử dụng Hệ thống phản hồi ý kiến.</p>
+        <p style="margin: 5px 0 0; font-size: 12px; color: #666666;">Trân trọng,<br>Hệ thống phản hồi ý kiến</p>
+    ';
+
+    return formatEmailBody($content);
 }
 
 // Handle response submission
@@ -219,124 +271,89 @@ if (isset($_POST['submit_response'])) {
                     sendFeedbackStatusNotification($feedback_id, 2);
                 }
 
-                // Only send email notification if the response is from the owner (sender)
-                if ($is_owner) {
-                    $handling_department = $feedback['handling_department'];
-                    $subject = "Phản hồi mới cho ý kiến #{$feedback['feedback_id']}";
-                    
-                    // Clean up response text to handle \r\n\r\n
-                    $clean_response_text = str_replace("\r\n\r\n", "\n\n", $response_text);
-                    $clean_response_text = str_replace("\r\n", "\n", $clean_response_text);
-                    
-                    $message = "Có phản hồi mới từ ";
+                // Send professional email notification
+                $handling_department = $feedback['handling_department'];
+                $subject = "Phản hồi mới: {$feedback['title']}";
+                
+                $clean_response_text = str_replace("\r\n\r\n", "\n\n", $response_text);
+                $clean_response_text = str_replace("\r\n", "\n", $clean_response_text);
+                
+                $body_content = "<strong>Nội dung phản hồi:</strong><br>" . nl2br(htmlspecialchars($clean_response_text));
+                
+                $recipient_emails = [];
+                if ($is_handler) {
+                    $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
+                    $body_content = "Phản hồi từ <strong>{$user_name} ({$mysql_user})</strong>:<br><br>";
+                    $body_content .= "<strong>Nội dung phản hồi:</strong><br>" . nl2br(htmlspecialchars($clean_response_text));
                     
                     if ($feedback['is_anonymous'] == 1) {
-                        $message .= "<strong>người gửi ẩn danh</strong>";
+                        if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id])) {
+                            $owner_id = $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'];
+                            $owner_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $owner_id);
+                            if ($owner_email) {
+                                $recipient_emails[] = $owner_email;
+                            }
+                        }
+                    } else {
+                        $owner_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $feedback['staff_id']);
+                        if ($owner_email) {
+                            $recipient_emails[] = $owner_email;
+                        }
+                    }
+                    $greeting = $feedback['is_anonymous'] ? 'Người gửi ý kiến' : Select_Value_by_Condition("name", "user_tb", "staff_id", $feedback['staff_id']);
+                } else {
+                    if ($feedback['is_anonymous'] == 1) {
+                        $body_content = "Bạn đã nhận được phản hồi từ <strong>Ẩn danh</strong>:<br><br>";
                     } else {
                         $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
-                        $message .= "<strong>{$user_name} ({$mysql_user})</strong>";
+                        $body_content = " Bạn đã nhận được phản hồi từ <strong>{$user_name} ({$mysql_user})</strong>:<br><br>";
                     }
+                    $body_content .= "<strong>Nội dung phản hồi:</strong><br>" . nl2br(htmlspecialchars($clean_response_text));
+                    $recipient_emails = getDepartmentEmails($handling_department);
+                    $greeting = "Đội ngũ {$handling_department}";
+                }
+                
+                // Remove the current user's email from recipients
+                $current_user_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $mysql_user);
+                if ($current_user_email) {
+                    $recipient_emails = array_filter($recipient_emails, function($email) use ($current_user_email) {
+                        return trim($email) !== trim($current_user_email);
+                    });
+                }
+                
+                $recipient_emails = array_filter(array_map('trim', $recipient_emails));
+                
+                if (!empty($recipient_emails)) {
+                    $email_html = generateProfessionalEmail(
+                        $subject,
+                        $greeting,
+                        $body_content,
+                        $feedback['feedback_id'],
+                        htmlspecialchars($feedback['title']),
+                        $attachment_paths
+                    );
                     
-                    $message .= " cho ý kiến:\n";
-                    $message .= "<strong>Tiêu đề:</strong> " . $feedback['title'] . "\n";
-                    $message .= "<strong>Phản hồi: </strong>" . $clean_response_text . "\n";
-                    
-                    // Add attachment notification if applicable
-                    if (!empty($attachment_paths)) {
-                         $message .= "<strong>Có file đính kèm:</strong>\n";
-                        foreach ($attachment_paths as $attachment) {
-                            $message .= "- " . $attachment['name'] . " (" . formatFileSize($attachment['size']) . ")\n";
-                        }
+                    $sent = sendDepartmentEmailListNotificationWithAttachments($recipient_emails, $subject, $email_html, $attachment_paths, true);
+                    if ($sent) {
+                        error_log("Professional email sent successfully to: " . implode(", ", $recipient_emails));
+                    } else {
+                        error_log("Failed to send professional email, check PHPMailer logs");
                     }
-                    
-                    $emails = [];
-                    $sql_users = "SELECT email FROM user_tb WHERE department = ? AND email IS NOT NULL AND email != ''";
-                    $stmt_users = $db->prepare($sql_users);
-                    if ($stmt_users) {
-                        $stmt_users->bind_param("s", $handling_department);
-                        $stmt_users->execute();
-                        $result_users = $stmt_users->get_result();
-                        if ($result_users && $result_users->num_rows > 0) {
-                            while ($user = $result_users->fetch_assoc()) {
-                                if (!empty($user['email'])) {
-                                    $emails[] = $user['email'];
-                                }
-                            }
-                        }
-                        $stmt_users->close();
-                    }
-                    
-                    // Remove the current user's email from the recipients list
-                    $current_user_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $mysql_user);
-                    if ($current_user_email) {
-                        $emails = array_filter($emails, function($email) use ($current_user_email) {
-                            return trim($email) !== trim($current_user_email);
-                        });
-                    }
-                    
-                    $emails = array_filter(array_map('trim', $emails));
-                    
-                    if (!empty($emails)) {
-                        $mail_config = null;
-                        $sql_config = "SELECT * FROM mailer_tb WHERE id = 1 LIMIT 1";
-                        $result_config = $db->query($sql_config);
-                        
-                        if ($result_config && $result_config->num_rows > 0) {
-                            $mail_config = $result_config->fetch_assoc();
-                            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
-                            
-                            try {
-                                $mail->isSMTP();
-                                $mail->Host       = $mail_config['host'];
-                                $mail->SMTPAuth   = true;
-                                $mail->Username   = $mail_config['address'];
-                                $mail->Password   = $mail_config['password'];
-                                $mail->Port       = $mail_config['port'];
-                                $mail->CharSet    = 'UTF-8';
-                                
-                                $mail->SMTPOptions = array(
-                                    'ssl' => array(
-                                        'verify_peer' => false,
-                                        'verify_peer_name' => false,
-                                        'allow_self_signed' => true
-                                    )
-                                );
-                                
-                                $mail->setFrom($mail_config['address'], 'Hệ thống phản hồi ý kiến');
-                                
-                                foreach ($emails as $email) {
-                                    $mail->addAddress($email);
-                                }
-                                
-                                $mail->isHTML(true);
-                                $mail->Subject = $subject;
-                                
-                                // Use HTML body with Calibri font
-                                $html_body = '<html><body style="font-family: Calibri, Arial, sans-serif;">';
-                                $html_body .= '<p>' . nl2br(htmlspecialchars($message)) . '</p>';
-                                $html_body .= '</body></html>';
-                                
-                                $mail->Body = $html_body;
-                                $mail->AltBody = $message;
-                                
-                                if (!empty($attachment_paths)) {
-                                    foreach ($attachment_paths as $attachment) {
-                                        if (isset($attachment['path']) && file_exists($attachment['path'])) {
-                                            $mail->addAttachment(
-                                                $attachment['path'],
-                                                isset($attachment['name']) ? $attachment['name'] : basename($attachment['path'])
-                                            );
-                                        }
-                                    }
-                                }
-                                
-                                $mail->send();
-                                error_log("Email thông báo phản hồi đã được gửi đến bộ phận xử lý");
-                            } catch (PHPMailer\PHPMailer\Exception $e) {
-                                error_log("Lỗi gửi email thông báo phản hồi: " . $mail->ErrorInfo);
-                            }
-                        }
-                    }
+                } else {
+                    error_log("No recipient emails found for notification");
+                    $admin_email = 'admin@example.com';
+                    $admin_subject = "Lỗi gửi thông báo phản hồi: $subject";
+                    $admin_body = $body_content . "<br><br>Lỗi: Không tìm thấy email người nhận.";
+                    $admin_html = generateProfessionalEmail(
+                        $admin_subject,
+                        'Quản trị viên',
+                        $admin_body,
+                        $feedback['feedback_id'],
+                        htmlspecialchars($feedback['title']),
+                        $attachment_paths
+                    );
+                    sendDepartmentEmailListNotificationWithAttachments([$admin_email], $admin_subject, $admin_html, $attachment_paths, true);
+                    error_log("Sent warning email to admin: $admin_email");
                 }
                 
                 header("Location: view_feedback.php?id=$feedback_id&success=1");
@@ -368,19 +385,29 @@ if (isset($_POST['submit_rating']) && $is_owner && $feedback['status'] == 2) {
                 sendFeedbackStatusNotification($feedback_id, 3);
             }
             
-            $sql = "SELECT DISTINCT u.staff_id FROM user_tb u 
-                    WHERE u.department = ? AND u.staff_id != ?";
-            $stmt = $db->prepare($sql);
-            $dept = $feedback['handling_department'];
-            $staff = $feedback['staff_id'] ? $feedback['staff_id'] : '';
-            $stmt->bind_param("ss", $dept, $staff);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            
-            if ($result && $result->num_rows > 0) {
-                while ($row = $result->fetch_assoc()) {
-                    $message = "Ý kiến \"" . $feedback['title'] . "\" đã được đánh giá và kết thúc";
-                    createNotification($row['staff_id'], $feedback_id, $message);
+            // Notify handling department about rating
+            $recipient_emails = getDepartmentEmails($feedback['handling_department']);
+            if (!empty($recipient_emails)) {
+                $subject = "Đánh giá ý kiến: {$feedback['title']}";
+                $body_content = "Ý kiến đã được đánh giá:<br><br>";
+                $body_content .= "<strong>Điểm đánh giá:</strong> {$rating_value}/5<br>";
+                if (!empty($rating_comment)) {
+                    $body_content .= "<strong>Nhận xét:</strong><br>" . nl2br(htmlspecialchars($rating_comment));
+                }
+                
+                $email_html = generateProfessionalEmail(
+                    $subject,
+                    "Đội ngũ {$feedback['handling_department']}",
+                    $body_content,
+                    $feedback['feedback_id'],
+                    htmlspecialchars($feedback['title'])
+                );
+                
+                $sent = sendDepartmentEmailListNotificationWithAttachments($recipient_emails, $subject, $email_html, [], true);
+                if ($sent) {
+                    error_log("Rating notification email sent successfully to: " . implode(", ", $recipient_emails));
+                } else {
+                    error_log("Failed to send rating notification email");
                 }
             }
             
@@ -404,6 +431,45 @@ if (isset($_POST['change_status']) && $is_handler) {
         if ($stmt->execute()) {
             $feedback['status'] = $new_status;
             sendFeedbackStatusNotification($feedback_id, $new_status);
+            
+            // Send status change notification
+            $recipient_emails = [];
+            if ($feedback['is_anonymous'] == 1) {
+                if (isset($_SESSION['created_anonymous_feedbacks'][$feedback_id])) {
+                    $owner_id = $_SESSION['created_anonymous_feedbacks'][$feedback_id]['user_id'];
+                    $owner_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $owner_id);
+                    if ($owner_email) {
+                        $recipient_emails[] = $owner_email;
+                    }
+                }
+            } else {
+                $owner_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $feedback['staff_id']);
+                if ($owner_email) {
+                    $recipient_emails[] = $owner_email;
+                }
+            }
+            
+            if (!empty($recipient_emails)) {
+                $subject = "Cập nhật trạng thái: {$feedback['title']}";
+                $status_text = getStatusText($new_status);
+                $body_content = "Trạng thái ý kiến đã được cập nhật thành <strong>$status_text</strong>.";
+                
+                $email_html = generateProfessionalEmail(
+                    $subject,
+                    $feedback['is_anonymous'] ? 'Người gửi ý kiến' : Select_Value_by_Condition("name", "user_tb", "staff_id", $feedback['staff_id']),
+                    $body_content,
+                    $feedback['feedback_id'],
+                    htmlspecialchars($feedback['title'])
+                );
+                
+                $sent = sendDepartmentEmailListNotificationWithAttachments($recipient_emails, $subject, $email_html, [], true);
+                if ($sent) {
+                    error_log("Status change notification email sent successfully to: " . implode(", ", $recipient_emails));
+                } else {
+                    error_log("Failed to send status change notification email");
+                }
+            }
+            
             $success_message = "Cập nhật trạng thái thành công!";
             header("Location: view_feedback.php?id=$feedback_id&success=3");
             exit();
@@ -431,16 +497,16 @@ if (isset($_GET['success'])) {
 $sender_name = $feedback['is_anonymous'] ? 'Ẩn danh' : Select_Value_by_Condition("name", "user_tb", "staff_id", $feedback['staff_id']);
 
 $can_reply = false;
-$is_own_anonymous_to_dept = ($feedback['is_anonymous'] == 1 && 
-                           $department == $feedback['handling_department'] && 
-                           ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
-                            (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view']))));
+$is_own_anonymous_to_section = ($feedback['is_anonymous'] == 1 && 
+                              $is_handler && 
+                              ((isset($_SESSION['anonymous_codes']) && in_array($feedback['anonymous_code'], $_SESSION['anonymous_codes'])) || 
+                               (isset($_SESSION['temp_anonymous_view']) && in_array($feedback['anonymous_code'], $_SESSION['temp_anonymous_view']))));
 
-if ($is_handler && !$is_own_anonymous_to_own_dept && ($feedback['status'] == 1 || $feedback['status'] == 2)) {
+if ($is_handler && !$is_own_anonymous_to_own_section && ($feedback['status'] == 1 || $feedback['status'] == 2)) {
     $can_reply = true;
 }
 
-if ($is_owner && $feedback['status'] == 2 && !$is_own_anonymous_to_own_dept) {
+if ($is_owner && $feedback['status'] == 2 && !$is_own_anonymous_to_own_section) {
     $can_reply = true;
 }
 
@@ -495,7 +561,6 @@ function time_elapsed_string($datetime, $full = false) {
     if (!$full) $string = array_slice($string, 0, 1);
     return $string ? implode(', ', $string) . ' trước' : 'vừa xong';
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -555,7 +620,7 @@ body {
     display: flex;
     flex-direction: column;
     flex: 1;
-    overflow-y: auto; 
+    overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 0;
 }
@@ -602,10 +667,6 @@ body {
 }
 .status-waiting {
     background-color: #007bff;
-    color: #fff;
-}
-.status-processing {
-    background-color: #17a2b8;
     color: #fff;
 }
 .status-responded {
@@ -973,12 +1034,6 @@ body {
     top: 20px;
     right: 20px;
     z-index: 9999;
-    max-height: 80vh;
-    overflow-y: auto;
-    pointer-events: none;
-}
-.toast-container .toast {
-    pointer-events: auto;
 }
 .toast {
     background-color: rgba(0, 0, 0, 0.8);
@@ -1031,9 +1086,8 @@ body {
 }
 .response-label {
     padding: 10px 15px 0 15px;
-    background-color: #f5f79;
+    background-color: #f5f7f9;
     border-bottom: 1px solid #eee;
-    overflow: visible;
 }
 .response-label h6 {
     margin-bottom: 10px;
@@ -1117,9 +1171,6 @@ body {
     }
     .file-preview-list.show {
         margin-top: 5px;
-    }
-    body {
-        overflow: hidden;
     }
 }
 @media (min-width: 768px) {
@@ -1255,13 +1306,13 @@ body {
         <?php if (!empty($success_message)): ?>
         <div class="toast success">
             <div class="toast-icon"><i class="fas fa-check-circle"></i></div>
-            <div class="toast-message"><?php echo $success_message; ?></div>
+            <div class="toast-message"><?php echo htmlspecialchars($success_message); ?></div>
         </div>
         <?php endif; ?>
         <?php if (!empty($error_message)): ?>
         <div class="toast error">
             <div class="toast-icon"><i class="fas fa-exclamation-circle"></i></div>
-            <div class="toast-message"><?php echo $error_message; ?></div>
+            <div class="toast-message"><?php echo htmlspecialchars($error_message); ?></div>
         </div>
         <?php endif; ?>
     </div>
@@ -1286,17 +1337,17 @@ body {
                         </div>
                         <div class="meta-item">
                             <span class="meta-label">Người gửi:</span>
-                            <strong><?php echo htmlspecialchars($feedback['staff_id']); ?> - <?php echo htmlspecialchars($sender_name); ?></strong>
+                            <strong><?php echo $feedback['is_anonymous'] ? 'Ẩn danh' : htmlspecialchars($feedback['staff_id'] . ' - ' . $sender_name); ?></strong>
                         </div>
                         <div class="meta-item">
                             <?php
-                            $sender_department = "";
+                            $sender_section = "";
                             if (!$feedback['is_anonymous'] && !empty($feedback['staff_id'])) {
-                                $sender_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $feedback['staff_id']);
+                                $sender_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $feedback['staff_id']);
                             }
                             ?>
                             <span class="meta-label">Bộ phận:</span>
-                            <strong><?php echo !empty($sender_department) ? htmlspecialchars($sender_department) : 'Không xác định'; ?></strong>
+                            <strong><?php echo !empty($sender_section) ? htmlspecialchars($sender_section) : 'Không xác định'; ?></strong>
                         </div>
                         <div class="meta-item">
                             <span class="meta-label">Trạng thái:</span>
@@ -1309,8 +1360,6 @@ body {
                                 <?php elseif ($feedback['status'] == 2): ?>
                                     <i class="fas fa-reply mr-1"></i>
                                 <?php elseif ($feedback['status'] == 3): ?>
-                                    <i class="fas fa-check-circle mr-1"></i>
-                                <?php else: ?>
                                     <i class="fas fa-check-circle mr-1"></i>
                                 <?php endif; ?>
                                 <?php echo getStatusText($feedback['status']); ?>
@@ -1373,7 +1422,7 @@ body {
                 <?php endif; ?>
                 
                 <div class="chat-container" id="chatContainer" style="<?php echo $show_chat ? '' : 'display: none;'; ?>">
-                    <?php if ($is_own_anonymous_to_own_dept && $feedback['status'] == 1): ?>
+                    <?php if ($is_own_anonymous_to_section && $feedback['status'] == 1): ?>
                     <div class="system-message">
                         <span>Ý kiến ẩn danh của bạn đang chờ xử lý. Bạn không thể tự chat với chính mình, vui lòng chờ người khác trong bộ phận xử lý phản hồi.</span>
                     </div>
@@ -1393,10 +1442,10 @@ body {
                                     if ($response['responder_id'] == $mysql_user) {
                                         echo 'Bạn';
                                     } else {
-                                        $responder_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $response['responder_id']);
+                                        $responder_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $response['responder_id']);
                                         $responder_name = isset($response['name']) ? $response['name'] : '';
-                                        if ($responder_dept == $feedback['handling_department']) {
-                                            echo htmlspecialchars($responder_dept);
+                                        if ($responder_section) {
+                                            echo htmlspecialchars($responder_section);
                                         } else if ($feedback['is_anonymous'] == 1) {
                                             $anonymous_codes = isset($_SESSION['anonymous_codes']) ? $_SESSION['anonymous_codes'] : [];
                                             if (in_array($feedback['anonymous_code'], $anonymous_codes)) {
@@ -1562,7 +1611,6 @@ body {
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-    // JavaScript version of formatFileSize to handle file size display in file preview
     function formatFileSize(bytes) {
         if (bytes < 1024) {
             return bytes + ' B';
@@ -1801,6 +1849,7 @@ body {
                 return 'fas fa-file text-secondary';
         }
     }
+
 
     $(window).on('beforeunload', function() {
         sessionStorage.setItem('refreshAfterViewFeedback', 'true');
