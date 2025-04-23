@@ -2,6 +2,7 @@
 session_start();
 include("../connect.php");
 include("functions.php");
+include("email_functions.php"); // Added to provide formatEmailBody
 include("email_notification.php");
 
 // Check if user is logged in
@@ -61,34 +62,37 @@ if ($can_delete) {
     $feedback_title = $feedback['title'];
     $feedback_content = $feedback['content'];
     $feedback_code = $feedback['feedback_id'];
-    $handling_department = $feedback['handling_department'];
+    $handling_section = $feedback['handling_department'];
     $is_anonymous = $feedback['is_anonymous'];
 
     // Lấy tên người dùng hiện tại
-    $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
+    $sql = "SELECT name FROM user_tb WHERE staff_id = ?";
+    $stmt = $db->prepare($sql);
+    $stmt->bind_param("s", $mysql_user);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $user_name = $result && $result->num_rows > 0 ? $result->fetch_assoc()['name'] : "Không xác định";
 
     // Tạo nội dung thông báo
-    $subject = "Thông báo xóa ý kiến ";
+    $subject = "Thông báo xóa ý kiến " ;
     $message = "Ý kiến sau đã bị xóa bởi ";
     
     if ($is_anonymous == 1) {
-        $message .= "<strong>người gửi ẩn danh</strong>";
+        $message .= "<strong>người gửi ẩn danh</strong>:<br><br>";
     } else {
-        $message .= "<strong>{$user_name} ({$mysql_user})</strong>";
+        $message .= "<strong>" . htmlspecialchars($user_name) . " (" . $mysql_user . ")</strong>:<br><br>";
     }
     
-    $message .= ":\n";
-    $message .= "<strong>Tiêu đề:</strong> {$feedback_title}\n";
-    $message .= "<strong>Nội dung:</strong> {$feedback_content}\n";
-    $message .= "<strong>Bộ phận xử lý:</strong> {$handling_department}\n";
-    
+    $message .= "<strong>Tiêu đề:</strong> " . htmlspecialchars($feedback_title) . "<br>";
+    $message .= "<strong>Nội dung:</strong> " . nl2br(htmlspecialchars($feedback_content)) . "<br>";
+    $message .= "<strong>Bộ phận xử lý:</strong> " . htmlspecialchars($handling_section) . "<br>";
+    $message .= "<strong>Thời gian xóa:</strong> " . date('d/m/Y H:i:s') . "<br>";
 
     // Định dạng nội dung email
-    $formatted = formatEmailContent($message);
-    $message = $formatted['html'];
+    $message = formatEmailBody($message);
 
     // Gửi email thông báo đến các thành viên khác trong bộ phận xử lý
-    if (!sendDepartmentEmailListNotification($handling_department, $subject, $message, [], $mysql_user)) {
+    if (!sendDepartmentEmailListNotification($handling_section, $subject, $message, [], $mysql_user)) {
         error_log("Failed to send deletion notification for feedback #$feedback_code");
         $_SESSION['error_message'] = "Xóa ý kiến thành công, nhưng không thể gửi email thông báo.";
     }
