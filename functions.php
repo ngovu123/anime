@@ -1,5 +1,5 @@
 <?php
-// Thêm cấu hình timezone ở đầu file
+// Set timezone
 date_default_timezone_set('Asia/Ho_Chi_Minh');
 
 // Include PHPMailer classes
@@ -10,7 +10,12 @@ use PHPMailer\PHPMailer\Exception;
 // Include database connection
 include_once("../connect.php");
 
-// === Database Utility Functions ===
+// Start session if not already started
+function sessionStartIfNeeded() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+}
 
 /**
  * Check if a value exists in a table based on a condition
@@ -39,8 +44,18 @@ function Check_Value_by_Condition($column, $table, $condition) {
  */
 function Select_Value_by_Condition($column, $table, $condition_column, $condition_value) {
     global $db;
-    $sql = "SELECT $column FROM $table WHERE $condition_column = '$condition_value'";
-    $result = $db->query($sql);
+    $sql = "SELECT $column FROM $table WHERE $condition_column = ?";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log("SQL Error in Select_Value_by_Condition: " . $db->error);
+        return "";
+    }
+    $stmt->bind_param("s", $condition_value);
+    if (!$stmt->execute()) {
+        error_log("Execute Error in Select_Value_by_Condition: " . $stmt->error);
+        return "";
+    }
+    $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         $row = $result->fetch_assoc();
         return $row[$column];
@@ -56,8 +71,14 @@ function Select_Value_by_Condition($column, $table, $condition_column, $conditio
 function Update_LoginStatus($status, $mysql_user) {
     global $db;
     $current_time = date("Y/m/d H:i:s");
-    $sql = "UPDATE user_tb SET loginStatus = '$status', loginTime = '$current_time' WHERE staff_id = '$mysql_user'";
-    $db->query($sql);
+    $sql = "UPDATE user_tb SET loginStatus = ?, loginTime = ? WHERE staff_id = ?";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log("SQL Error in Update_LoginStatus: " . $db->error);
+        return;
+    }
+    $stmt->bind_param("sss", $status, $current_time, $mysql_user);
+    $stmt->execute();
 }
 
 /**
@@ -71,8 +92,14 @@ function Update_LoginStatus($status, $mysql_user) {
  */
 function Update_Value_by_Condition($table, $column, $value, $condition_column, $condition_value) {
     global $db;
-    $sql = "UPDATE $table SET $column = '$value' WHERE $condition_column = '$condition_value'";
-    return $db->query($sql);
+    $sql = "UPDATE $table SET $column = ? WHERE $condition_column = ?";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log("SQL Error in Update_Value_by_Condition: " . $db->error);
+        return false;
+    }
+    $stmt->bind_param("ss", $value, $condition_value);
+    return $stmt->execute();
 }
 
 /**
@@ -81,7 +108,7 @@ function Update_Value_by_Condition($table, $column, $value, $condition_column, $
  * @return bool Always true (placeholder)
  */
 function Check_Signature_Exist($mysql_user) {
-    return true;
+    return true; // Placeholder, replace with actual logic if needed
 }
 
 /**
@@ -119,13 +146,13 @@ function generateFeedbackID() {
 /**
  * Check if a user can handle feedback
  * @param string $staff_id The staff ID
- * @param string $handling_department The department handling the feedback
+ * @param string $handling_section The section handling the feedback
  * @param string|null $feedback_staff_id The staff ID of the feedback creator
  * @return bool True if user can handle feedback, false otherwise
  */
-function canHandleFeedback($staff_id, $handling_department, $feedback_staff_id = null) {
+function canHandleFeedback($staff_id, $handling_section, $feedback_staff_id = null) {
     global $db;
-    $sql = "SELECT department FROM user_tb WHERE staff_id = ?";
+    $sql = "SELECT section FROM user_tb WHERE staff_id = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in canHandleFeedback: " . $db->error);
@@ -139,20 +166,30 @@ function canHandleFeedback($staff_id, $handling_department, $feedback_staff_id =
     $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         $row = $result->fetch_assoc();
-        return ($row['department'] == $handling_department && $staff_id != $feedback_staff_id);
+        return ($row['section'] == $handling_section && $staff_id != $feedback_staff_id);
     }
     return false;
 }
 
 /**
- * Get user department and section
+ * Get user section and department
  * @param string $staff_id The staff ID
- * @return array Department and section
+ * @return array Section and department
  */
 function getUserDepartmentAndSection($staff_id) {
     global $db;
-    $sql = "SELECT department, section FROM user_tb WHERE staff_id = '$staff_id'";
-    $result = $db->query($sql);
+    $sql = "SELECT department, section FROM user_tb WHERE staff_id = ?";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log("SQL Error in getUserDepartmentAndSection: " . $db->error);
+        return ["department" => "", "section" => ""];
+    }
+    $stmt->bind_param("s", $staff_id);
+    if (!$stmt->execute()) {
+        error_log("Execute Error in getUserDepartmentAndSection: " . $stmt->error);
+        return ["department" => "", "section" => ""];
+    }
+    $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         return $result->fetch_assoc();
     }
@@ -160,20 +197,20 @@ function getUserDepartmentAndSection($staff_id) {
 }
 
 /**
- * Get all departments
- * @return array List of department names
+ * Get all sections
+ * @return array List of section names
  */
 function getAllDepartments() {
     global $db;
-    $departments = [];
+    $sections = [];
     $sql = "SELECT department_name FROM handling_department_tb";
     $result = $db->query($sql);
     if ($result && $result->num_rows > 0) {
         while ($row = $result->fetch_assoc()) {
-            $departments[] = $row['department_name'];
+            $sections[] = $row['department_name'];
         }
     }
-    return $departments;
+    return $sections;
 }
 
 /**
@@ -227,11 +264,13 @@ function sanitizeInputWithLineBreaks($input) {
  * @return string Formatted date
  */
 function formatDate($date, $includeTime = false) {
+    if (empty($date) || $date == '0000-00-00 00:00:00') {
+        return '';
+    }
     if ($includeTime) {
         return date('d/m/Y H:i', strtotime($date));
-    } else {
-        return date('d/m/Y', strtotime($date));
     }
+    return date('d/m/Y', strtotime($date));
 }
 
 /**
@@ -266,19 +305,16 @@ function sanitizeFilename($filename) {
  */
 if (!function_exists('formatEmailContent')) {
     function formatEmailContent($message) {
-        // Fix line breaks in message
         $message = str_replace(
             ["\\r\\n\\r\\n", "\\r\\n", "\r\n\r\n", "\r\n", "\n\n", "\n"],
             ["<br><br>", "<br>", "<br><br>", "<br>", "<br><br>", "<br>"],
             $message
         );
         
-        // Use Calibri font and format for better readability
         $html_message = '<div style="font-family: Calibri, \'Segoe UI\', Arial, sans-serif; font-size: 14px; line-height: 1.5;">' . 
                        $message . 
                        '</div>';
         
-        // Create plain text version
         $plain_message = strip_tags(str_replace(["<br>", "<br><br>"], ["\n", "\n\n"], $message));
         
         return [
@@ -287,8 +323,6 @@ if (!function_exists('formatEmailContent')) {
         ];
     }
 }
-
-// === Notification Functions ===
 
 /**
  * Create a notification for a user
@@ -314,11 +348,6 @@ function createNotification($user_id, $feedback_id, $message, $has_attachment = 
     $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         $feedback = $result->fetch_assoc();
-        $feedback_code = $feedback['feedback_id'];
-        $feedback_title = $feedback['title'];
-        $feedback_content = $feedback['content'];
-        $department = $feedback['handling_department'];
-        $created_at = formatDate($feedback['created_at']);
         $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $user_id);
         $user_email = Select_Value_by_Condition("email", "user_tb", "staff_id", $user_id);
         $sql = "INSERT INTO feedback_response_tb (feedback_id, responder_id, response, notification, is_read) 
@@ -350,13 +379,13 @@ function createNotification($user_id, $feedback_id, $message, $has_attachment = 
                 $mail->Password = $config['password'];
                 $mail->Port = $config['port'];
                 $mail->CharSet = 'UTF-8';
-                $mail->SMTPOptions = array(
-                    'ssl' => array(
+                $mail->SMTPOptions = [
+                    'ssl' => [
                         'verify_peer' => false,
                         'verify_peer_name' => false,
                         'allow_self_signed' => true
-                    )
-                );
+                    ]
+                ];
                 $mail->setFrom($config['address'], 'Hệ thống phản hồi ý kiến');
                 $mail->addAddress($user_email, $user_name);
                 $mail->isHTML(true);
@@ -405,7 +434,6 @@ function createAnonymousNotification($feedback_id, $message, $has_attachment = f
     }
     $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
-        $feedback = $result->fetch_assoc();
         $sql = "INSERT INTO feedback_response_tb (feedback_id, responder_id, response, notification, is_read) 
                 VALUES (?, 'system', '', ?, 0)";
         $stmt = $db->prepare($sql);
@@ -424,14 +452,14 @@ function createAnonymousNotification($feedback_id, $message, $has_attachment = f
 }
 
 /**
- * Notify department about feedback
- * @param string $department The department name
+ * Notify section about feedback
+ * @param string $section The section name
  * @param int $feedback_id The feedback ID
  * @param string $message The notification message
  * @param bool $has_attachment Whether the notification has attachments
  * @return bool True if successful, false otherwise
  */
-function notifyDepartmentAboutFeedback($department, $feedback_id, $message, $has_attachment = false) {
+function notifyDepartmentAboutFeedback($section, $feedback_id, $message, $has_attachment = false) {
     global $db;
     $sql = "SELECT feedback_id, title FROM feedback_tb WHERE id = ?";
     $stmt = $db->prepare($sql);
@@ -462,9 +490,9 @@ function notifyDepartmentAboutFeedback($department, $feedback_id, $message, $has
             return false;
         }
         $subject = "Thông báo về ý kiến #{$feedback_code}: {$feedback_title}";
-        $emails = getDepartmentEmails($department);
+        $emails = getDepartmentEmails($section);
         if (empty($emails)) {
-            error_log("No email addresses found for department: $department");
+            error_log("No email addresses found for section: $section");
             return false;
         }
         return sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $message);
@@ -473,7 +501,7 @@ function notifyDepartmentAboutFeedback($department, $feedback_id, $message, $has
 }
 
 /**
- * Send email notification to department email list with optional attachments
+ * Send email notification to section email list with optional attachments
  * @param array $emails Array of email addresses
  * @param string $subject The email subject
  * @param string $message The email message
@@ -486,8 +514,6 @@ function sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $
         error_log("No email addresses provided");
         return false;
     }
-
-    // Retrieve mailer configuration
     $sql = "SELECT * FROM mailer_tb WHERE id = 1 LIMIT 1";
     $result = $db->query($sql);
     if (!$result || $result->num_rows == 0) {
@@ -495,10 +521,8 @@ function sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $
         return false;
     }
     $config = $result->fetch_assoc();
-
     $mail = new PHPMailer(true);
     try {
-        // Configure PHPMailer
         $mail->isSMTP();
         $mail->Host = $config['host'];
         $mail->SMTPAuth = true;
@@ -513,11 +537,7 @@ function sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $
                 'allow_self_signed' => true
             ]
         ];
-
-        // Set sender
         $mail->setFrom($config['address'], 'Hệ thống phản hồi ý kiến');
-
-        // Add recipients
         foreach ($emails as $email) {
             $email = trim($email);
             if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -525,21 +545,15 @@ function sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $
                 error_log("Added recipient: " . $email);
             }
         }
-
-        // If no valid recipients, return false
         if (empty($mail->getToAddresses())) {
             error_log("No valid email addresses to send");
             return false;
         }
-
-        // Set email content
         $mail->isHTML(true);
         $mail->Subject = $subject;
         $formatted = formatEmailContent($message);
         $mail->Body = $formatted['html'];
         $mail->AltBody = $formatted['text'];
-
-        // Add attachments if provided
         foreach ($attachments as $attachment) {
             if (isset($attachment['file_path']) && file_exists($attachment['file_path'])) {
                 $mail->addAttachment(
@@ -549,14 +563,11 @@ function sendDepartmentEmailListNotificationWithAttachments($emails, $subject, $
                 error_log("Added attachment: " . $attachment['file_name']);
             }
         }
-
-        // Send email
         $mail->send();
         error_log("Email notification sent to: " . implode(", ", $emails));
         return true;
     } catch (Exception $e) {
         error_log("Email sending failed: " . $mail->ErrorInfo);
-        // Save to file as fallback
         $notifications_dir = "email_notifications";
         if (!file_exists($notifications_dir)) {
             mkdir($notifications_dir, 0755, true);
@@ -599,7 +610,7 @@ if (!function_exists('sendFeedbackStatusNotification')) {
             $feedback_title = $feedback['title'];
             $feedback_content = $feedback['content'];
             $owner_id = $feedback['staff_id'];
-            $department = $feedback['handling_department'];
+            $section = $feedback['handling_department'];
             $is_anonymous = $feedback['is_anonymous'];
             $anonymous_code = $feedback['anonymous_code'];
             $created_at = formatDate($feedback['created_at']);
@@ -607,10 +618,10 @@ if (!function_exists('sendFeedbackStatusNotification')) {
             $response_time = isset($feedback['response_time']) ? formatDate($feedback['response_time']) : '';
             $response_id = $feedback['response_id'];
             $sender_name = "";
-            $sender_dept = "";
+            $sender_section = "";
             if (!$is_anonymous && $owner_id) {
                 $sender_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $owner_id);
-                $sender_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $owner_id);
+                $sender_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $owner_id);
             }
             $status_text = getStatusText($new_status);
             $rating_info = "";
@@ -640,7 +651,7 @@ if (!function_exists('sendFeedbackStatusNotification')) {
                 $message .= "\nNgười gửi: " . ($is_anonymous ? "Ẩn danh" : "{$owner_id} - {$sender_name}");
                 $message .= "\nTiêu đề: {$feedback_title}";
                 $message .= "\nNội dung: {$feedback_content}";
-                $message .= "\nBộ phận xử lý: {$department}";
+                $message .= "\nBộ phận xử lý: {$section}";
                 if (!empty($feedback['image_path'])) {
                     $message .= "\nĐính kèm: Có file đính kèm";
                 }
@@ -649,8 +660,8 @@ if (!function_exists('sendFeedbackStatusNotification')) {
                 $message .= "\nTiêu đề: {$feedback_title}";
                 $message .= "\nNgày gửi: {$created_at}";
                 $message .= "\nNgười gửi: " . ($is_anonymous ? "Ẩn danh" : "{$owner_id} - {$sender_name}");
-                $message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $sender_dept);
-                $message .= "\nBộ phận xử lý: {$department}";
+                $message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $sender_section);
+                $message .= "\nBộ phận xử lý: {$section}";
                 $message .= "\nNội dung: {$feedback_content}";
                 if (!empty($feedback['image_path'])) {
                     $message .= "\nĐính kèm: Có file đính kèm";
@@ -676,9 +687,9 @@ if (!function_exists('sendFeedbackStatusNotification')) {
             } else if ($owner_id) {
                 createNotification($owner_id, $feedback_id, $message);
             }
-            $sql = "SELECT DISTINCT u.staff_id FROM user_tb u WHERE u.department = ? AND u.staff_id != ?";
+            $sql = "SELECT DISTINCT u.staff_id FROM user_tb u WHERE u.section = ? AND u.staff_id != ?";
             $stmt = $db->prepare($sql);
-            $stmt->bind_param("ss", $department, $owner_id);
+            $stmt->bind_param("ss", $section, $owner_id);
             $stmt->execute();
             $result = $stmt->get_result();
             if ($result && $result->num_rows > 0) {
@@ -738,14 +749,14 @@ function markAllNotificationsAsRead($user_id) {
             $feedback_ids[] = $row['id'];
         }
     }
-    $user_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $user_id);
+    $user_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $user_id);
     $sql = "SELECT id FROM feedback_tb WHERE handling_department = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in markAllNotificationsAsRead (second prepare): " . $db->error);
         return false;
     }
-    $stmt->bind_param("s", $user_department);
+    $stmt->bind_param("s", $user_section);
     if (!$stmt->execute()) {
         error_log("Execute Error in markAllNotificationsAsRead (second execute): " . $stmt->error);
         return false;
@@ -866,18 +877,18 @@ function sendFeedbackDeletionNotification($feedback_id, $mysql_user) {
         $feedback_code = $feedback['feedback_id'];
         $feedback_title = $feedback['title'];
         $feedback_content = $feedback['content'];
-        $department = $feedback['handling_department'];
+        $section = $feedback['handling_department'];
         $is_anonymous = $feedback['is_anonymous'];
         $user_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $mysql_user);
-        $user_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $mysql_user);
+        $user_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $mysql_user);
         $current_time = date('d/m/Y H:i');
         $message = "[{$current_time}] Thông báo ý kiến: Ý Kiến này đã bị xóa bởi ";
         $message .= $is_anonymous ? "người gửi ẩn danh" : "{$mysql_user} - {$user_name}";
         $message .= "\nTiêu đề: {$feedback_title}";
         $message .= "\nNội dung: {$feedback_content}";
-        $message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $user_department);
-        $message .= "\nBộ phận xử lý: {$department}";
-        notifyDepartmentAboutFeedback($department, $feedback_id, $message);
+        $message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $user_section);
+        $message .= "\nBộ phận xử lý: {$section}";
+        notifyDepartmentAboutFeedback($section, $feedback_id, $message);
         return true;
     }
     return false;
@@ -892,98 +903,10 @@ function sendFeedbackDeletionNotification($feedback_id, $mysql_user) {
  * @return bool True if successful, false otherwise
  */
 function sendNewResponseNotification($feedback_id, $responder_id, $has_attachment = false, $attachments = []) {
-    global $db;
-    $sql = "SELECT f.*, fr.response, fr.created_at as response_time 
-            FROM feedback_tb f 
-            LEFT JOIN feedback_response_tb fr ON f.id = fr.feedback_id 
-            WHERE f.id = ? 
-            ORDER BY fr.created_at DESC LIMIT 1";
-    $stmt = $db->prepare($sql);
-    if (!$stmt) {
-        error_log("SQL Error in sendNewResponseNotification: " . $db->error);
-        return false;
-    }
-    $stmt->bind_param("i", $feedback_id);
-    if (!$stmt->execute()) {
-        error_log("Execute Error in sendNewResponseNotification: " . $stmt->error);
-        return false;
-    }
-    $result = $stmt->get_result();
-    if ($result && $result->num_rows > 0) {
-        $feedback = $result->fetch_assoc();
-        $feedback_code = $feedback['feedback_id'];
-        $feedback_title = $feedback['title'];
-        $feedback_content = $feedback['content'];
-        $owner_id = $feedback['staff_id'];
-        $department = $feedback['handling_department'];
-        $is_anonymous = $feedback['is_anonymous'];
-        $anonymous_code = $feedback['anonymous_code'];
-        $created_at = formatDate($feedback['created_at']);
-        $response_text = $feedback['response'];
-        $response_time = isset($feedback['response_time']) ? formatDate($feedback['response_time']) : date('d/m/Y H:i');
-        $responder_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $responder_id);
-        $responder_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $responder_id);
-        $sender_name = "";
-        $sender_dept = "";
-        if (!$is_anonymous && $owner_id) {
-            $sender_name = Select_Value_by_Condition("name", "user_tb", "staff_id", $owner_id);
-            $sender_dept = Select_Value_by_Condition("department", "user_tb", "staff_id", $owner_id);
-        }
-        $dept_message = "Thông báo: Bạn đã nhận được một phản hồi mới từ {$responder_name}. Vui lòng kiểm tra để cập nhật thông tin kịp thời.";
-        $dept_message .= "\nTiêu đề: {$feedback_title}";
-        $dept_message .= "\nNgày gửi: {$created_at}";
-        $dept_message .= "\nNgười gửi: " . ($is_anonymous ? "Ẩn danh" : "{$owner_id} - {$sender_name}");
-        $dept_message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $sender_dept);
-        $dept_message .= "\nBộ phận xử lý: {$department}";
-        $dept_message .= "\nNội dung: {$feedback_content}";
-        if (!empty($feedback['image_path'])) {
-            $dept_message .= "\nĐính kèm: Có file đính kèm";
-        }
-        $dept_message .= "\nPhản hồi:";
-        $dept_message .= "\n+ Thời gian: {$response_time}";
-        $dept_message .= "\n+ Nội dung: {$response_text}";
-        if (!empty($attachments)) {
-            $dept_message .= "\nĐính kèm: ";
-            foreach ($attachments as $index => $attachment) {
-                if ($index > 0) $dept_message .= ", ";
-                $dept_message .= $attachment['file_name'] . " (" . formatFileSize($attachment['file_size']) . ")";
-            }
-        }
-        $user_message = "Thông báo: Bạn đã nhận được một phản hồi mới từ {$responder_name}. Vui lòng kiểm tra để cập nhật thông tin kịp thời.";
-        $user_message .= "\nTiêu đề: {$feedback_title}";
-        $user_message .= "\nNgày gửi: {$created_at}";
-        $user_message .= "\nNgười gửi: " . ($is_anonymous ? "Ẩn danh" : "{$owner_id} - {$sender_name}");
-        $user_message .= "\nBộ phận: " . ($is_anonymous ? "Ẩn danh" : $sender_dept);
-        $user_message .= "\nBộ phận xử lý: {$department}";
-        $user_message .= "\nNội dung: {$feedback_content}";
-        if (!empty($feedback['image_path'])) {
-            $user_message .= "\nĐính kèm: Có file đính kèm";
-        }
-        $user_message .= "\nPhản hồi:";
-        $user_message .= "\n+ Thời gian: {$response_time}";
-        $user_message .= "\n+ Nội dung: {$response_text}";
-        if (!empty($attachments)) {
-            $user_message .= "\nĐính kèm: ";
-            foreach ($attachments as $index => $attachment) {
-                if ($index > 0) $user_message .= ", ";
-                $user_message .= $attachment['file_name'] . " (" . formatFileSize($attachment['file_size']) . ")";
-            }
-        }
-        if ($responder_id == $owner_id) {
-            sendDepartmentEmailListNotificationWithAttachments($emails, "Phản hồi mới cho ý kiến #{$feedback_code}", $dept_message, $attachments);
-        } else {
-            if ($is_anonymous) {
-                createAnonymousNotification($feedback_id, $user_message, $has_attachment);
-            } else if ($owner_id) {
-                createNotification($owner_id, $feedback_id, $user_message, $has_attachment);
-            }
-        }
-        return true;
-    }
-    return false;
+    // Hàm này đã được cập nhật để không gửi thông báo
+    // Logic gửi email đã được xử lý trong view_feedback.php
+    return true;
 }
-
-// === File Handling Functions ===
 
 /**
  * Handle single file upload
@@ -1169,19 +1092,20 @@ function getAnonymousFeedbackByCode($code) {
 }
 
 /**
- * Get department emails
- * @param string $department The department name
+ * Get section emails based on handling_staff
+ * @param string $section The section name
  * @return array Array of email addresses
  */
-function getDepartmentEmails($department) {
+function getDepartmentEmails($section) {
     global $db;
-    $sql = "SELECT email_list FROM handling_department_tb WHERE department_name = ?";
+    $emails = [];
+    $sql = "SELECT handling_staff FROM handling_department_tb WHERE department_name = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in getDepartmentEmails: " . $db->error);
         return [];
     }
-    $stmt->bind_param("s", $department);
+    $stmt->bind_param("s", $section);
     if (!$stmt->execute()) {
         error_log("Execute Error in getDepartmentEmails: " . $stmt->error);
         return [];
@@ -1189,9 +1113,31 @@ function getDepartmentEmails($department) {
     $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         $row = $result->fetch_assoc();
-        return explode(',', $row['email_list']);
+        $staff_ids = explode(',', $row['handling_staff']);
+        $staff_ids = array_map('trim', $staff_ids);
+        $staff_ids = array_filter($staff_ids);
+        if (!empty($staff_ids)) {
+            $placeholders = implode(',', array_fill(0, count($staff_ids), '?'));
+            $sql = "SELECT email FROM user_tb WHERE staff_id IN ($placeholders)";
+            $stmt = $db->prepare($sql);
+            if (!$stmt) {
+                error_log("SQL Error in getDepartmentEmails (second query): " . $db->error);
+                return [];
+            }
+            $stmt->bind_param(str_repeat('s', count($staff_ids)), ...$staff_ids);
+            if (!$stmt->execute()) {
+                error_log("Execute Error in getDepartmentEmails (second query): " . $stmt->error);
+                return [];
+            }
+            $result = $stmt->get_result();
+            while ($row = $result->fetch_assoc()) {
+                if (!empty($row['email'])) {
+                    $emails[] = $row['email'];
+                }
+            }
+        }
     }
-    return [];
+    return array_unique($emails);
 }
 
 /**
@@ -1286,7 +1232,6 @@ function saveAndNotifyNewResponse($feedback_id, $responder_id, $response_text, $
             $stmt->bind_param("issis", $response_id, $file_name, $file_path, $file_type, $file_size);
             if (!$stmt->execute()) {
                 error_log("Execute Error in saveAndNotifyNewResponse (attachment): " . $stmt->error);
-                error_log("SQL Error: " . $stmt->error);
             } else {
                 error_log("Successfully inserted attachment with ID: " . $db->insert_id);
             }
@@ -1312,8 +1257,6 @@ function saveAndNotifyNewResponse($feedback_id, $responder_id, $response_text, $
     }
     return false;
 }
-
-// === File Utility Functions ===
 
 /**
  * Get file icon class based on extension
@@ -1400,8 +1343,6 @@ function getFileMimeType($file_path) {
     return isset($mime_types[$extension]) ? $mime_types[$extension] : 'application/octet-stream';
 }
 
-// === Message Counting Functions ===
-
 /**
  * Count unread messages for a feedback
  * @param int $feedback_id The feedback ID
@@ -1482,14 +1423,14 @@ function countTotalUnreadMessages($user_id) {
             $feedback_ids[] = $row['id'];
         }
     }
-    $user_department = Select_Value_by_Condition("department", "user_tb", "staff_id", $user_id);
+    $user_section = Select_Value_by_Condition("section", "user_tb", "staff_id", $user_id);
     $sql = "SELECT id FROM feedback_tb WHERE handling_department = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in countTotalUnreadMessages (second prepare): " . $db->error);
         return 0;
     }
-    $stmt->bind_param("s", $user_department);
+    $stmt->bind_param("s", $user_section);
     if (!$stmt->execute()) {
         error_log("Execute Error in countTotalUnreadMessages (second execute): " . $stmt->error);
         return 0;
@@ -1509,8 +1450,6 @@ function countTotalUnreadMessages($user_id) {
     return $total_unread;
 }
 
-// === Feedback Permission Functions ===
-
 /**
  * Check if user can delete feedback
  * @param array $feedback The feedback data
@@ -1518,6 +1457,7 @@ function countTotalUnreadMessages($user_id) {
  * @return bool True if user can delete, false otherwise
  */
 function canUserDeleteFeedback($feedback, $user_id) {
+    sessionStartIfNeeded();
     if ($feedback['status'] != 1) {
         return false;
     }
@@ -1538,6 +1478,7 @@ function canUserDeleteFeedback($feedback, $user_id) {
  * @return bool True if successful, false otherwise
  */
 function saveAnonymousFeedbackUser($feedback_id, $anonymous_code, $user_id) {
+    sessionStartIfNeeded();
     if (!isset($_SESSION['created_anonymous_feedbacks'])) {
         $_SESSION['created_anonymous_feedbacks'] = [];
     }
@@ -1555,6 +1496,7 @@ function saveAnonymousFeedbackUser($feedback_id, $anonymous_code, $user_id) {
  * @return bool True if user is creator, false otherwise
  */
 function isAnonymousFeedbackCreator($feedback_id, $user_id) {
+    sessionStartIfNeeded();
     if (!isset($_SESSION['created_anonymous_feedbacks']) || 
         !isset($_SESSION['created_anonymous_feedbacks'][$feedback_id])) {
         return false;
@@ -1563,13 +1505,13 @@ function isAnonymousFeedbackCreator($feedback_id, $user_id) {
 }
 
 /**
- * Check if user is in handling department of their own anonymous feedback
+ * Check if user is in handling section of their own anonymous feedback
  * @param int $feedback_id The feedback ID
  * @param string $user_id The user ID
- * @param string $department The department name
- * @return bool True if user is in handling department, false otherwise
+ * @param string $section The section name
+ * @return bool True if user is in handling section, false otherwise
  */
-function isAnonymousFeedbackCreatorInHandlingDepartment($feedback_id, $user_id, $department) {
+function isAnonymousFeedbackCreatorInHandlingDepartment($feedback_id, $user_id, $section) {
     global $db;
     if (!isAnonymousFeedbackCreator($feedback_id, $user_id)) {
         return false;
@@ -1588,7 +1530,7 @@ function isAnonymousFeedbackCreatorInHandlingDepartment($feedback_id, $user_id, 
     $result = $stmt->get_result();
     if ($result && $result->num_rows > 0) {
         $row = $result->fetch_assoc();
-        return $row['handling_department'] === $department;
+        return $row['handling_department'] === $section;
     }
     return false;
 }
