@@ -5,6 +5,7 @@ date_default_timezone_set('Asia/Ho_Chi_Minh');
 // Include database connection
 include_once("../connect.php");
 include_once("functions.php");
+include_once("email_functions.php");
 
 // Include PHPMailer classes
 use PHPMailer\PHPMailer\PHPMailer;
@@ -15,24 +16,6 @@ use PHPMailer\PHPMailer\Exception;
 require_once 'PHPMailer/src/PHPMailer.php';
 require_once 'PHPMailer/src/SMTP.php';
 require_once 'PHPMailer/src/Exception.php';
-
-/**
- * Hàm lấy cấu hình email từ bảng mailer_tb
- * 
- * @return array|null Mảng chứa thông tin cấu hình email hoặc null nếu không tìm thấy
- */
-function getMailerConfig() {
-    global $db;
-    
-    $sql = "SELECT * FROM mailer_tb WHERE id = 1 LIMIT 1";
-    $result = $db->query($sql);
-    
-    if ($result && $result->num_rows > 0) {
-        return $result->fetch_assoc();
-    }
-    
-    return null;
-}
 
 /**
  * Function to send email notification to a staff member
@@ -91,36 +74,31 @@ function sendEmailNotification($staff_id, $name, $subject, $message) {
 }
 
 /**
- * Function to send email notifications to all members of a department
+ * Function to send email notifications to all members of a section based on handling_department_tb
  * 
- * @param string $department Department name
+ * @param string $section Section name
  * @param string $subject Subject of the notification
  * @param string $message Content of the notification
  * @return bool True if at least one notification was sent
  */
-function sendDepartmentEmailNotifications($department, $subject, $message) {
+function sendDepartmentEmailNotifications($section, $subject, $message) {
     global $db;
     
-    $sql = "SELECT staff_id, name, email FROM user_tb WHERE department = ?";
-    $stmt = $db->prepare($sql);
+    // Get recipients from handling_department_tb
+    $recipients = getDepartmentEmails($db, $section);
     
-    if (!$stmt) {
+    if (empty($recipients)) {
+        error_log("No recipients found for section: " . $section);
         return false;
     }
     
-    $stmt->bind_param("s", $department);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
     $sent = false;
     
-    if ($result && $result->num_rows > 0) {
-        while ($user = $result->fetch_assoc()) {
-            if (!empty($user['email'])) {
-                $sent = sendPHPMailer($user['email'], $subject, $message) || $sent;
-            } else {
-                $sent = sendEmailNotification($user['staff_id'], $user['name'], $subject, $message) || $sent;
-            }
+    foreach ($recipients as $recipient) {
+        if (!empty($recipient['email'])) {
+            $sent = sendPHPMailer($recipient['email'], $subject, $message) || $sent;
+        } else {
+            $sent = sendEmailNotification($recipient['staff_id'], $recipient['name'], $subject, $message) || $sent;
         }
     }
     
@@ -128,54 +106,69 @@ function sendDepartmentEmailNotifications($department, $subject, $message) {
 }
 
 /**
- * Function to send email notifications based on department email list
+ * Function to send email notifications based on section email list
  * 
- * @param string $department Department name
+ * @param string $section Section name
  * @param string $subject Subject of the notification
  * @param string $message Content of the notification
  * @param array $attachments Optional array of attachments
  * @param string|null $exclude_staff_id Staff ID to exclude from recipients
  * @return bool True if notification was sent successfully
  */
-function sendDepartmentEmailListNotification($department, $subject, $message, $attachments = [], $exclude_staff_id = null) {
+function sendDepartmentEmailListNotification($section, $subject, $message, $attachments = [], $exclude_staff_id = null) {
     global $db;
     
-    // Lấy email từ bảng user_tb, loại trừ exclude_staff_id
-    $sql = "SELECT staff_id, email FROM user_tb WHERE department = ? AND email IS NOT NULL AND email != ''";
-    if ($exclude_staff_id) {
-        $sql .= " AND staff_id != ?";
-    }
-    
+    // Get handling staff from handling_department_tb
+    $sql = "SELECT handling_staff FROM handling_department_tb WHERE department_name = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in sendDepartmentEmailListNotification: " . $db->error);
         return false;
     }
     
-    if ($exclude_staff_id) {
-        $stmt->bind_param("ss", $department, $exclude_staff_id);
-    } else {
-        $stmt->bind_param("s", $department);
-    }
-    
+    $stmt->bind_param("s", $section);
     $stmt->execute();
     $result = $stmt->get_result();
     
     $emails = [];
     if ($result && $result->num_rows > 0) {
-        while ($user = $result->fetch_assoc()) {
-            $email = trim($user['email']);
-            if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $emails[$user['staff_id']] = $email;
+        $row = $result->fetch_assoc();
+        $staff_ids = explode(',', $row['handling_staff']);
+        $staff_ids = array_map('trim', $staff_ids);
+        $staff_ids = array_filter($staff_ids);
+        
+        if (!empty($staff_ids)) {
+            if ($exclude_staff_id && in_array($exclude_staff_id, $staff_ids)) {
+                $staff_ids = array_diff($staff_ids, [$exclude_staff_id]);
+            }
+            
+            if (!empty($staff_ids)) {
+                $placeholders = implode(',', array_fill(0, count($staff_ids), '?'));
+                $sql = "SELECT staff_id, email FROM user_tb WHERE staff_id IN ($placeholders) AND email IS NOT NULL AND email != ''";
+                $stmt = $db->prepare($sql);
+                if (!$stmt) {
+                    error_log("SQL Error in sendDepartmentEmailListNotification (user_tb): " . $db->error);
+                    return false;
+                }
+                
+                $stmt->bind_param(str_repeat('s', count($staff_ids)), ...$staff_ids);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                
+                while ($user = $result->fetch_assoc()) {
+                    $email = trim($user['email']);
+                    if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                        $emails[$user['staff_id']] = $email;
+                    }
+                }
             }
         }
     }
     
-    error_log("Emails found for department $department (excluding $exclude_staff_id): " . implode(", ", $emails));
+    error_log("Emails found for section $section (excluding $exclude_staff_id): " . implode(", ", $emails));
     
     if (!empty($emails)) {
-        // Gửi một email duy nhất với nhiều người nhận
-        $config = getMailerConfig();
+        $config = getMailerConfig($db);
         if (!$config) {
             error_log("Mailer configuration not found");
             return false;
@@ -223,7 +216,7 @@ function sendDepartmentEmailListNotification($department, $subject, $message, $a
             // Set email content
             $mail->isHTML(true);
             $mail->Subject = $subject;
-            $mail->Body = $message; // Đã được định dạng HTML
+            $mail->Body = $message;
             $mail->AltBody = strip_tags($message);
             
             // Add attachments if any
@@ -252,12 +245,12 @@ function sendDepartmentEmailListNotification($department, $subject, $message, $a
         mkdir($dir, 0755, true);
     }
     
-    $sanitized_dept = sanitizeFilename($department);
-    $filename = $dir . "/" . $sanitized_dept . "_Notification_" . date("Ymd_His") . ".txt";
+    $sanitized_section = sanitizeFilename($section);
+    $filename = $dir . "/" . $sanitized_section . "_Notification_" . date("Ymd_His") . ".txt";
     
     $content = "Date: " . date("Y-m-d H:i:s") . "\n";
     $content .= "Subject: " . $subject . "\n";
-    $content .= "To: Department " . $department . "\n";
+    $content .= "To: Section " . $section . "\n";
     $content .= "Excluded: " . ($exclude_staff_id ? $exclude_staff_id : "None") . "\n";
     $content .= "-----------------------------------\n\n";
     $content .= $message . "\n\n";
@@ -285,7 +278,7 @@ function sendDepartmentEmailListNotification($department, $subject, $message, $a
 function sendPHPMailer($to, $subject, $message, $attachments = []) {
     global $db;
     
-    $config = getMailerConfig();
+    $config = getMailerConfig($db);
     if (!$config) {
         error_log("Mailer configuration not found");
         return false;
@@ -346,36 +339,28 @@ function sendPHPMailer($to, $subject, $message, $attachments = []) {
 }
 
 /**
- * Function to send feedback notification to department
+ * Function to send feedback notification to section
  * 
  * @param int $feedback_id ID of the feedback
- * @param string $department Department name
+ * @param string $section Section name
  * @param string $subject Email subject
  * @param string $message Email message
  * @param array $attachments Optional array of attachments
  * @param string|null $exclude_staff_id Staff ID to exclude from recipients
  * @return bool True if notification was sent
  */
-function sendFeedbackNotificationToDepartment($feedback_id, $department, $subject, $message, $attachments = [], $exclude_staff_id = null) {
+function sendFeedbackNotificationToDepartment($feedback_id, $section, $subject, $message, $attachments = [], $exclude_staff_id = null) {
     global $db;
     
-    $sql = "SELECT staff_id, email FROM user_tb WHERE department = ? AND email IS NOT NULL AND email != ''";
-    if ($exclude_staff_id) {
-        $sql .= " AND staff_id != ?";
-    }
-    
+    // Get handling staff from handling_department_tb
+    $sql = "SELECT handling_staff FROM handling_department_tb WHERE department_name = ?";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         error_log("SQL Error in sendFeedbackNotificationToDepartment: " . $db->error);
         return false;
     }
     
-    if ($exclude_staff_id) {
-        $stmt->bind_param("ss", $department, $exclude_staff_id);
-    } else {
-        $stmt->bind_param("s", $department);
-    }
-    
+    $stmt->bind_param("s", $section);
     if (!$stmt->execute()) {
         error_log("Execute Error in sendFeedbackNotificationToDepartment: " . $stmt->error);
         return false;
@@ -385,17 +370,46 @@ function sendFeedbackNotificationToDepartment($feedback_id, $department, $subjec
     
     $emails = [];
     if ($result && $result->num_rows > 0) {
-        while ($user = $result->fetch_assoc()) {
-            if (!empty($user['email'])) {
-                $emails[$user['staff_id']] = $user['email'];
+        $row = $result->fetch_assoc();
+        $staff_ids = explode(',', $row['handling_staff']);
+        $staff_ids = array_map('trim', $staff_ids);
+        $staff_ids = array_filter($staff_ids);
+        
+        if (!empty($staff_ids)) {
+            if ($exclude_staff_id && in_array($exclude_staff_id, $staff_ids)) {
+                $staff_ids = array_diff($staff_ids, [$exclude_staff_id]);
+            }
+            
+            if (!empty($staff_ids)) {
+                $placeholders = implode(',', array_fill(0, count($staff_ids), '?'));
+                $sql = "SELECT staff_id, email FROM user_tb WHERE staff_id IN ($placeholders) AND email IS NOT NULL AND email != ''";
+                $stmt = $db->prepare($sql);
+                if (!$stmt) {
+                    error_log("SQL Error in sendFeedbackNotificationToDepartment (user_tb): " . $db->error);
+                    return false;
+                }
+                
+                $stmt->bind_param(str_repeat('s', count($staff_ids)), ...$staff_ids);
+                if (!$stmt->execute()) {
+                    error_log("Execute Error in sendFeedbackNotificationToDepartment (user_tb): " . $stmt->error);
+                    return false;
+                }
+                
+                $result = $stmt->get_result();
+                
+                while ($user = $result->fetch_assoc()) {
+                    if (!empty($user['email'])) {
+                        $emails[$user['staff_id']] = $user['email'];
+                    }
+                }
             }
         }
     }
     
-    error_log("Emails found for department $department (excluding $exclude_staff_id): " . implode(", ", $emails));
+    error_log("Emails found for section $section (excluding $exclude_staff_id): " . implode(", ", $emails));
     
     if (!empty($emails)) {
-        $config = getMailerConfig();
+        $config = getMailerConfig($db);
         if (!$config) {
             error_log("Mailer configuration not found");
             return false;
@@ -464,12 +478,12 @@ function sendFeedbackNotificationToDepartment($feedback_id, $department, $subjec
         mkdir($dir, 0755, true);
     }
     
-    $sanitized_dept = sanitizeFilename($department);
-    $filename = $dir . "/" . $sanitized_dept . "_Notification_" . date("Ymd_His") . ".txt";
+    $sanitized_section = sanitizeFilename($section);
+    $filename = $dir . "/" . $sanitized_section . "_Notification_" . date("Ymd_His") . ".txt";
     
     $content = "Date: " . date("Y-m-d H:i:s") . "\n";
     $content .= "Subject: " . $subject . "\n";
-    $content .= "To: Department " . $department . "\n";
+    $content .= "To: Section " . $section . "\n";
     $content .= "Excluded: " . ($exclude_staff_id ? $exclude_staff_id : "None") . "\n";
     $content .= "-----------------------------------\n\n";
     $content .= $message . "\n\n";
