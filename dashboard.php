@@ -28,7 +28,7 @@ if (!isset($_SESSION["SS_username"])) {
 
 $mysql_user = $_SESSION["SS_username"];
 $user_info = getUserDepartmentAndSection($mysql_user);
-$department = $user_info["department"];
+$section = $user_info["department"];
 $section = $user_info["section"];
 
 // Get user's name
@@ -61,7 +61,7 @@ $stmt->close();
 $is_handling_department = false;
 $sql = "SELECT COUNT(*) as count FROM handling_department_tb WHERE department_name = ?";
 $stmt = $db->prepare($sql);
-$stmt->bind_param("s", $department);
+$stmt->bind_param("s", $section);
 $stmt->execute();
 $result = $stmt->get_result();
 if ($result && $result->num_rows > 0) {
@@ -73,7 +73,7 @@ if ($result && $result->num_rows > 0) {
 $stmt->close();
 
 // Sau đó mới lấy feedback được gửi đến phòng ban của người dùng
-$department_feedbacks = [];
+$section_feedbacks = [];
 if ($is_handling_department) {
     // Bộ phận xử lý cần xem được cả ý kiến ẩn danh thuộc phòng ban của họ
     $sql = "SELECT *, 0 as is_owner FROM feedback_tb 
@@ -82,13 +82,13 @@ if ($is_handling_department) {
             ORDER BY created_at DESC";
     
     $stmt = $db->prepare($sql);
-    $stmt->bind_param("ss", $department, $mysql_user);
+    $stmt->bind_param("ss", $section, $mysql_user);
     $stmt->execute();
     $result = $stmt->get_result();
 
     if ($result && $result->num_rows > 0) {
         while ($row = $result->fetch_assoc()) {
-            $department_feedbacks[] = $row;
+            $section_feedbacks[] = $row;
         }
     }
     $stmt->close();
@@ -103,7 +103,7 @@ if (!$is_handling_department) {
     $all_feedbacks = $feedbacks; // Only show their own feedback
 } else {
     // For handling departments, merge their own feedback with department feedback
-    $all_feedbacks = array_merge($feedbacks, $department_feedbacks);
+    $all_feedbacks = array_merge($feedbacks, $section_feedbacks);
 }
 
 // Lấy tất cả các ý kiến ẩn danh mà người dùng đã tạo - BẤT KỂ gửi đến phòng ban nào
@@ -160,7 +160,7 @@ foreach ($all_feedbacks as $key => $feedback) {
             $all_feedbacks[$key]['is_own_anonymous'] = true;
             
             // Nếu người dùng thuộc phòng ban xử lý của chính feedback ẩn danh họ tạo
-            if ($feedback['handling_department'] === $department) {
+            if ($feedback['handling_department'] === $section) {
                 $all_feedbacks[$key]['can_not_chat'] = true;
             }
         }
@@ -169,7 +169,7 @@ foreach ($all_feedbacks as $key => $feedback) {
             $all_feedbacks[$key]['is_own_anonymous'] = true;
             
             // Nếu người dùng thuộc phòng ban xử lý của feedback ẩn danh này
-            if ($feedback['handling_department'] === $department) {
+            if ($feedback['handling_department'] === $section) {
                 $all_feedbacks[$key]['can_not_chat'] = true;
             }
         }
@@ -1286,7 +1286,7 @@ endif;
    $completed_count = 0;
    
    // Get all feedbacks before filtering to count properly
-   $all_feedbacks_for_count = array_merge($feedbacks, $department_feedbacks);
+   $all_feedbacks_for_count = array_merge($feedbacks, $section_feedbacks);
    $unique_feedbacks_for_count = [];
    $feedback_ids_for_count = [];
    
